@@ -4,9 +4,35 @@
 
 **Goal:** Build an Alloy watchface for Pebble Time 2 that auto-cycles through up to 3 user-configured teams showing live baseball scores, bases, and pitch count.
 
-**Architecture:** A self-contained Alloy project with four source files (`index.js`, `scores.js`, `display.js`, `settings.js`) and a Clay config. `scores.js` fetches and normalises MLB Stats API responses into a `GameState` object; `display.js` renders that object using Piu; `index.js` orchestrates three independent timers and the `@moddable/proxy` network bridge.
+**Architecture:** A self-contained Alloy project. Watch code lives under `src/embeddedjs/`, split into modules (`main.js`, `scores.js`, `display.js`, `settings.js`) declared in `src/embeddedjs/manifest.json`. Phone code lives in `src/pkjs/index.js` and wires the network proxy plus Clay config. `scores.js` fetches and normalises MLB Stats API responses into a `GameState` object; `display.js` renders that object using Piu; `main.js` orchestrates three `setInterval` timers, the `@moddable/pebbleproxy` network bridge, and the Clay settings `Message`.
 
-**Tech Stack:** Alloy (Moddable SDK, ES2025), Piu UI framework, `@moddable/proxy` for HTTP via phone, Clay for settings UI, MLB Stats API (free, no auth).
+**Tech Stack:** Alloy (Moddable SDK, XS engine, ES2025), Piu UI framework, `@moddable/pebbleproxy` for HTTP via the phone, Clay for the settings UI, MLB Stats API (free, no auth).
+
+---
+
+## ⚠️ Reality-check corrections applied (vs. the original draft)
+
+This plan was revised after verifying every framework assumption against the official repebble docs and the `moddable-OpenSource/pebble-examples` repo. The original draft contained several APIs that do not exist as written. Corrections, each grounded in a verified source:
+
+| # | Original (wrong) | Corrected (verified) | Source |
+|---|---|---|---|
+| 1 | Flat `src/index.js`, `src/scores.js`, … | Watch code under `src/embeddedjs/`; phone code in `src/pkjs/`; each project has `src/c/mdbl.c`, `wscript`, and `src/embeddedjs/manifest.json` | Alloy guide; every `hello*` example |
+| 2 | Multi-file split assumed to "just work" | Extra modules must be listed in `src/embeddedjs/manifest.json` under `modules`; imports use bare specifiers (`import {x} from "scores"`) | `hellomodule` example |
+| 3 | Dependency `@moddable/proxy` | `@moddable/pebbleproxy` (install via `pebble package install @moddable/pebbleproxy`) | Networking guide |
+| 4 | `new Proxy()` + `proxy.addEventListener("connected")` | Global `watch`; `watch.addEventListener("connected", …)` / `watch.connected.pebblekit`. `fetch()` is a real global returning a standard `Response` | Networking guide; `hellofetch` |
+| 5 | Clay handled on the watch via a `"settings"` proxy event | Clay runs in **PKJS** (`new Clay(config)`); config reaches the watch as an AppMessage read via the `Message` class (`import Message from "pebble/message"`) | App Configuration guide; App Messages guide; `hellomessage` |
+| 6 | `Timer.repeat(...)` with no import; no way to reconfigure intervals | Global `setInterval(cb, ms)` / `clearInterval(id)` (verified — no import) — store the ids so settings changes hot-reload without `System.restart()` (which is not relied on) | `hellotimer` example |
+| 7 | Clock recomputed only on cycle/fetch (would freeze between updates) | Subscribe `watch.addEventListener("minutechange", …)` to refresh the display every minute | Watchfaces guide |
+| 8 | `trace(...)` for debug output | `console.log(...)` | Alloy guide; all examples |
+| 9 | `hydrate=linescore` | `hydrate=team,linescore` — team `abbreviation`/`shortName` are **absent** without the `team` hydrate, and the whole display keys off abbreviations | Verified against `statsapi.mlb.com` response |
+| 10 | `isoDate` via `toISOString()` (UTC) | Local-date formatter — UTC rolls the date forward for evening US games and shows a false off-day | Logic review |
+| 11 | `normalizeLinescore` set `inningHalf` to `"Top"` when absent | Preserve `existing.inningHalf` when the payload omits it | Logic review |
+| 12 | `fetchAllSchedules` rendered every team at slot `0` | Render only when `i === currentSlot` so initial load doesn't fight the cycle timer | Logic review |
+
+**Still flagged for on-device confirmation (could not be fully verified from docs):**
+- **Clay package/require name.** The repebble *App Configuration* guide shows `require('@rebble/clay')`; the historical pebble-dev package is `pebble-clay` (`require('pebble-clay')`). This plan uses `pebble-clay`/`require('pebble-clay')` — **confirm the exact name** via the App Configuration guide / `pebble package install` output before relying on it.
+- **Piu watchface mount.** The verified `piu-watchface` example uses `Application.template(...)` then `export default new WatchfaceApp({}, {})`. This plan keeps the imperative `new Application(null, {...})` (also valid Piu) but makes it the **entry module's default export** to match how the launcher picks up the root Application. Verify the watchface renders at all in Step-5/Step-8 emulator checks before building further.
+- **`screen.width`/`screen.height`** for Piu sizing — confirm in the emulator (Poco exposes `render.width/height`; Piu Applications size to the display, and `screen` is a documented global).
 
 ---
 
@@ -14,84 +40,164 @@
 
 | File | Role |
 |---|---|
-| `package.json` | Alloy manifest — platform target (emery), watchface flag, proxy dependency |
-| `src/index.js` | Entry point — proxy setup, three timers, state array, wires scores → display |
-| `src/scores.js` | All API calls + `GameState` normalisation. Only file that may reference the upstream API in comments. |
-| `src/display.js` | Piu layout — renders any `GameState` to screen. No fetch logic. |
-| `src/settings.js` | `localStorage` read/write with typed defaults. |
-| `src/scores.stub.js` | Hardcoded `GameState` array covering all 6 states. Swap in for `scores.js` imports in `index.js` during emulator testing. |
-| `config/clay-config.json` | Clay UI definition — 3 team dropdowns, 2 sliders. |
+| `package.json` | Alloy manifest — `targetPlatforms:["emery"]`, `watchapp.watchface`, `capabilities:["configurable"]`, `enableMultiJS:true`, `messageKeys`, dependencies (`@moddable/pebbleproxy`, `pebble-clay`) |
+| `wscript` | Build script (generated by the scaffold — leave unmodified) |
+| `src/c/mdbl.c` | C entry point that launches the embedded JS (generated — leave unmodified) |
+| `src/embeddedjs/manifest.json` | Declares Piu + net + timer includes and the four watch JS modules |
+| `src/embeddedjs/main.js` | Entry — `watch` readiness, three `setInterval` timers, state array, Clay `Message`, `minutechange`, wires scores → display. Default-exports the Piu Application. |
+| `src/embeddedjs/scores.js` | All API calls + `GameState` normalisation. Only file that may reference the upstream API in comments. |
+| `src/embeddedjs/display.js` | Piu layout — renders any `GameState`. No fetch logic. |
+| `src/embeddedjs/settings.js` | `localStorage` read/write with typed defaults. |
+| `src/embeddedjs/scores.stub.js` | Hardcoded `GameState` array covering all 6 states. Swap into `main.js` imports for emulator UI testing. |
+| `src/pkjs/index.js` | Phone side — registers `@moddable/pebbleproxy` and initialises Clay. |
+| `src/pkjs/clay-config.json` | Clay UI definition — 3 team dropdowns, 2 sliders. Required by `pkjs/index.js`. |
 
 ---
 
-## Reference
+## Reference (verified URLs)
 
-- Alloy guides: https://developer.repebble.com/guides/alloy/
-- Networking (proxy setup): https://developer.repebble.com/guides/alloy/networking/
+- Alloy guide: https://developer.repebble.com/guides/alloy/
+- Networking (proxy + `fetch`): https://developer.repebble.com/guides/alloy/networking/
+- App Messages (`Message` class): https://developer.repebble.com/guides/alloy/app-messages/
+- Storage (`localStorage`): https://developer.repebble.com/guides/alloy/storage/
+- Watchfaces (Piu + `minutechange`): https://developer.repebble.com/guides/alloy/watchfaces/
 - App Configuration (Clay): https://developer.repebble.com/guides/user-interfaces/app-configuration/
-- Storage: https://developer.repebble.com/guides/alloy/storage/
-- Alloy watchface tutorial (follow this first): https://developer.repebble.com/tutorials/alloy-watchface-tutorial/part1/
+- Examples repo: https://github.com/moddable-OpenSource/pebble-examples
+  — study `hellotimer`, `hellofetch`, `hellomessage`, `hellolocalstorage`, `hellopiu-text`, `hellomodule`, `hellowatchface` for the exact patterns this plan uses.
 
 ---
 
 ## Task 1: Project scaffold
 
-**Files:**
-- Create: `package.json`
-- Create: `src/index.js` (empty entry point)
+**Files:** `package.json`, `wscript`, `src/c/mdbl.c`, `src/embeddedjs/main.js`, `src/embeddedjs/manifest.json`, `src/pkjs/index.js`
 
 - [ ] **Step 1: Create a Rebble account**
 
-  Go to https://rebble.io and sign up for a free account. This is required to use CloudPebble and to sideload to the device.
+  Sign up at https://rebble.io (free). Required for CloudPebble and for sideloading to a device — the original Pebble servers are offline.
 
-- [ ] **Step 2: Open CloudPebble and create the project**
+- [ ] **Step 2: Create the Alloy project**
 
-  Go to https://cloudpebble.net, log in with your Rebble account. Click "Create Project":
-  - Name: `pebble-baseball`
-  - Project type: **Alloy**
-  - Template: **Watchface**
-  - Platform: **Emery** (Pebble Time 2)
+  Either **CloudPebble** (https://cloudpebble.net → Create Project → type **Alloy**, template **Watchface**, platform **Emery**) or the **local SDK** (`pebble new-project --alloy pebble-baseball`). Both generate the canonical scaffold:
 
-  CloudPebble generates the initial scaffold including `package.json` and a starter `src/index.js`.
+  ```
+  pebble-baseball/
+  ├── package.json
+  ├── wscript
+  └── src/
+      ├── c/mdbl.c                 # leave unmodified
+      ├── embeddedjs/
+      │   ├── main.js
+      │   └── manifest.json
+      └── pkjs/
+          └── index.js
+  ```
 
-- [ ] **Step 3: Add the proxy dependency**
+- [ ] **Step 3: Add dependencies**
 
-  In CloudPebble's `package.json` editor, add `@moddable/proxy` to dependencies:
+  ```bash
+  pebble package install @moddable/pebbleproxy
+  pebble package install pebble-clay   # confirm exact name — see "Still flagged" note above
+  ```
+
+  These add to `package.json` `dependencies`. Do not hand-edit the dependency versions.
+
+- [ ] **Step 4: Set the watchface manifest keys in `package.json`**
+
+  Ensure the `pebble` block contains (merge with what the scaffold generated; keep the generated `uuid`):
 
   ```json
   {
-    "dependencies": {
-      "@moddable/proxy": "*"
+    "pebble": {
+      "displayName": "Baseball Scores",
+      "projectType": "moddable",
+      "sdkVersion": "3",
+      "targetPlatforms": ["emery"],
+      "enableMultiJS": true,
+      "watchapp": { "watchface": true },
+      "capabilities": ["configurable"],
+      "messageKeys": ["team1", "team2", "team3", "cycleInterval", "pollInterval"],
+      "resources": { "media": [] }
     }
   }
   ```
 
-- [ ] **Step 4: Verify the emulator launches**
+  > `projectType: "moddable"` marks this as an Alloy/Moddable app (verified in the `hellomodule` example's `package.json`). Keep the scaffold-generated `uuid`.
 
-  Click **Run** in CloudPebble. The Emery emulator should open and show a blank watchface (or the default template). No errors in the console.
+  - `enableMultiJS: true` is required for the multi-module split (Task 2+).
+  - `capabilities: ["configurable"]` makes the phone app show the settings gear.
+  - `messageKeys` must list every Clay setting key, or Clay cannot deliver them.
 
-- [ ] **Step 5: Export project and sync with local git repo**
+- [ ] **Step 5: Write `src/embeddedjs/manifest.json`**
 
-  In CloudPebble: Settings → Export. This downloads a `.zip`. Extract into `/Users/jimmytimmons/Projects/pebble-baseball/`, replacing the scaffold files.
+  Declares the framework include and the four JS modules. Bare-specifier imports (`import {x} from "scores"`) resolve through the `modules` map. Note the extension convention from the `hellomodule` example: the entry is `"./main"` (no extension), additional modules carry `.js`.
+
+  ```json
+  {
+    "include": [
+      "$(MODDABLE)/examples/manifest_mod.json",
+      "$(MODDABLE)/examples/manifest_typings.json"
+    ],
+    "modules": {
+      "*": [
+        "./main",
+        "./settings.js",
+        "./scores.js",
+        "./display.js"
+      ]
+    }
+  }
+  ```
+
+  > **Verified against the raw example manifests:** every Alloy example (`hellotimer`, `hellofetch`, `hellomessage`, `hellolocalstorage`, `hellopiu-text`, `hellowatchface`, `hellomodule`) includes exactly `manifest_mod.json` + `manifest_typings.json` and nothing else. That single `manifest_mod.json` catch-all provides Piu, `fetch`, the `Message` class, `localStorage`, and the global `setInterval`/`clearInterval` — so no per-feature includes are needed. (`scores.stub.js` is only swapped in during display testing; add it to `modules` temporarily if you import it.)
+
+- [ ] **Step 6: Write `src/pkjs/index.js` (proxy + Clay)**
+
+  ```js
+  // src/pkjs/index.js — runs on the phone (PebbleKit JS).
+  // Wires the Moddable network proxy and the Clay config page.
+  var moddableProxy = require("@moddable/pebbleproxy");
+  var Clay = require("pebble-clay");               // confirm name — see "Still flagged"
+  var clayConfig = require("./clay-config.json");  // added in Task 7
+  var clay = new Clay(clayConfig);                 // auto-handles showConfiguration + webviewclosed
+
+  Pebble.addEventListener("ready", function (e) {
+    moddableProxy.readyReceived(e);
+  });
+
+  // The proxy and our own messages share the AppMessage channel.
+  // appMessageReceived() returns true when the proxy consumed the message.
+  Pebble.addEventListener("appmessage", function (e) {
+    var handled = moddableProxy.appMessageReceived(e);
+    if (handled) return;
+    // Non-proxy inbound messages would be handled here (none expected from the watch in v1).
+  });
+  ```
+
+  > Clay (with default `autoHandleEvents`) sends the saved settings to the watch via AppMessage keyed by the `messageKeys`, where `main.js`'s `Message` reads them (Task 8). The `clay-config.json` is added in Task 7; until then this file will fail to `require` it — create a `[]` placeholder if you want Step 7 of this task to pass first.
+
+- [ ] **Step 7: Verify the emulator launches**
+
+  Run in the Emery emulator. It should open with a blank/default watchface and **no console errors**. If the `clay-config.json` require fails, add a temporary `config/clay-config.json` placeholder (`[]`) or comment the Clay lines until Task 7.
+
+- [ ] **Step 8: Commit**
 
   ```bash
   cd /Users/jimmytimmons/Projects/pebble-baseball
   git add -A
-  git commit -m "chore: scaffold Alloy watchface project"
-  git push
+  git commit -m "chore: scaffold Alloy watchface (embeddedjs/pkjs, proxy + clay wiring)"
   ```
 
 ---
 
 ## Task 2: settings.js
 
-**Files:**
-- Create: `src/settings.js`
+**Files:** Create `src/embeddedjs/settings.js`
 
 - [ ] **Step 1: Write settings.js**
 
   ```js
-  // src/settings.js
+  // src/embeddedjs/settings.js
+  // Persistent settings in localStorage (backed by Pebble flash — survives reboots).
   const DEFAULTS = {
     team1: 0,
     team2: 0,
@@ -100,13 +206,20 @@
     pollInterval: 60,
   };
 
+  function readNum(key, def) {
+    const raw = localStorage.getItem(key);     // null when unset
+    const n = raw == null ? def : parseInt(raw, 10);
+    return Number.isFinite(n) ? n : def;
+  }
+
   export function readSettings() {
     return {
-      team1:         parseInt(localStorage.getItem("team1")         ?? DEFAULTS.team1),
-      team2:         parseInt(localStorage.getItem("team2")         ?? DEFAULTS.team2),
-      team3:         parseInt(localStorage.getItem("team3")         ?? DEFAULTS.team3),
-      cycleInterval: parseInt(localStorage.getItem("cycleInterval") ?? DEFAULTS.cycleInterval),
-      pollInterval:  Math.max(30, parseInt(localStorage.getItem("pollInterval") ?? DEFAULTS.pollInterval)),
+      team1:         readNum("team1", DEFAULTS.team1),
+      team2:         readNum("team2", DEFAULTS.team2),
+      team3:         readNum("team3", DEFAULTS.team3),
+      cycleInterval: readNum("cycleInterval", DEFAULTS.cycleInterval),
+      // enforce the 30s floor from the spec
+      pollInterval:  Math.max(30, readNum("pollInterval", DEFAULTS.pollInterval)),
     };
   }
 
@@ -121,27 +234,26 @@
   }
   ```
 
-- [ ] **Step 2: Verify defaults in emulator**
+- [ ] **Step 2: Verify defaults in the emulator**
 
-  In `src/index.js`, temporarily add:
+  Temporarily in `main.js`:
 
   ```js
   import { readSettings } from "settings";
-  const s = readSettings();
-  trace(`settings: ${JSON.stringify(s)}\n`);
+  console.log(`settings: ${JSON.stringify(readSettings())}`);
   ```
 
-  Run in emulator. Console should log:
+  Expected console output:
   ```
   settings: {"team1":0,"team2":0,"team3":0,"cycleInterval":15,"pollInterval":60}
   ```
 
-  Remove the `trace` line after verifying.
+  Remove the line after verifying.
 
 - [ ] **Step 3: Commit**
 
   ```bash
-  git add src/settings.js src/index.js
+  git add src/embeddedjs/settings.js src/embeddedjs/main.js
   git commit -m "feat: add settings localStorage helpers"
   ```
 
@@ -149,19 +261,16 @@
 
 ## Task 3: scores.js — normalisation functions
 
-**Files:**
-- Create: `src/scores.js` (normalisation functions only — fetch functions added in Task 4)
+**Files:** Create `src/embeddedjs/scores.js` (normalisation only; fetch functions in Task 4)
 
-The normalisation functions are pure (no Pebble APIs). Verify them by tracing output with fixture data.
+The normalisation functions are pure (no Pebble APIs), so they are unit-testable. Step 5 below adds a Node harness in addition to the emulator trace.
 
-- [ ] **Step 1: Write the normalisation helpers**
+- [ ] **Step 1: Write the helpers**
 
   ```js
-  // src/scores.js
+  // src/embeddedjs/scores.js
   // MLB Stats API — https://statsapi.mlb.com
   // This is the only file that references the upstream API by name.
-
-  // --- Helpers ---
 
   function formatTime(isoString) {
     const d = new Date(isoString);
@@ -175,9 +284,17 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
     const d = new Date(isoString);
     const today = new Date();
     if (d.toDateString() === today.toDateString()) return "Today";
-    const days  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const days   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     return `${days[d.getDay()]} ${months[d.getMonth()]} ${d.getDate()}`;
+  }
+
+  // "Bottom" -> "Bot", "Top" -> "Top", anything else -> null (so the field stays null
+  // for scheduled games and is *preserved* by the linescore path when absent).
+  function normHalf(raw) {
+    if (raw === "Bottom") return "Bot";
+    if (raw === "Top")    return "Top";
+    return null;
   }
 
   function mapStatus(detailedState) {
@@ -186,18 +303,20 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
     if (s.includes("progress") || s.includes("live")) return "live";
     if (s.includes("final") || s.includes("game over") || s.includes("completed")) return "final";
     if (s.includes("postponed") || s.includes("suspended")) return "postponed";
-    return "scheduled"; // covers "Scheduled", "Pre-Game", "Warmup", "Delayed"
+    return "scheduled"; // "Scheduled", "Pre-Game", "Warmup", "Delayed", etc.
   }
   ```
 
 - [ ] **Step 2: Write normalizeScheduleResponse**
 
+  Note `hydrate=team,linescore` is what makes `abbreviation`/`shortName` present (verified — they are absent with `hydrate=linescore` alone).
+
   ```js
-  // src/scores.js (continued)
+  // src/embeddedjs/scores.js (continued)
 
   export function normalizeScheduleResponse(data, teamId) {
     const game = data?.dates?.[0]?.games?.[0];
-    if (!game) return null;
+    if (!game) return null;  // no game today -> caller produces off_day
 
     const isHome    = game.teams.home.team.id === teamId;
     const myTeam    = isHome ? game.teams.home : game.teams.away;
@@ -215,7 +334,7 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
       myScore:      myTeam.score    ?? 0,
       theirScore:   theirTeam.score ?? 0,
       inning:       ls?.currentInning ?? null,
-      inningHalf:   ls?.inningHalf === "Bottom" ? "Bot" : "Top",
+      inningHalf:   normHalf(ls?.inningHalf),
       outs:         ls?.outs    ?? null,
       balls:        ls?.balls   ?? null,
       strikes:      ls?.strikes ?? null,
@@ -235,13 +354,14 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
 
 - [ ] **Step 3: Write normalizeLinescore**
 
-  ```js
-  // src/scores.js (continued)
+  Reads the standalone `/game/{pk}/linescore` shape: `teams.home/away.runs`, top-level `currentInning/inningHalf/outs/balls/strikes`, and top-level `offense.first/second/third` (verified). Does **not** change `status` (only the schedule timer may), and **preserves** `inningHalf` when the payload omits it.
 
-  // Updates only live-game fields. Does NOT change status — only the schedule
-  // timer (which calls normalizeScheduleResponse) may change status.
+  ```js
+  // src/embeddedjs/scores.js (continued)
+
   export function normalizeLinescore(data, existing) {
     if (!data || !existing) return existing;
+    const half = normHalf(data.inningHalf);
     return {
       ...existing,
       myScore:    existing.isHome ? (data.teams?.home?.runs ?? existing.myScore)
@@ -249,7 +369,7 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
       theirScore: existing.isHome ? (data.teams?.away?.runs ?? existing.theirScore)
                                   : (data.teams?.home?.runs ?? existing.theirScore),
       inning:     data.currentInning ?? existing.inning,
-      inningHalf: data.inningHalf === "Bottom" ? "Bot" : "Top",
+      inningHalf: half ?? existing.inningHalf,          // preserve when absent
       outs:       data.outs    ?? existing.outs,
       balls:      data.balls   ?? existing.balls,
       strikes:    data.strikes ?? existing.strikes,
@@ -264,7 +384,7 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
 - [ ] **Step 4: Write normalizeNextGame**
 
   ```js
-  // src/scores.js (continued)
+  // src/embeddedjs/scores.js (continued)
 
   export function normalizeNextGame(data, teamId) {
     for (const date of data?.dates ?? []) {
@@ -282,81 +402,90 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
   }
   ```
 
-- [ ] **Step 5: Verify normalisation with fixture data in emulator**
+- [ ] **Step 5: Unit-test the pure functions in Node, then trace in the emulator**
 
-  In `src/index.js`, temporarily add:
+  These functions touch no Pebble API, so test them with the local Node runtime (already available). Create `test/scores.test.mjs` that imports the normalisers and asserts against a fixture:
 
   ```js
-  import { normalizeScheduleResponse, normalizeLinescore } from "scores";
+  // test/scores.test.mjs   (run: node test/scores.test.mjs)
+  import assert from "node:assert";
+  import { normalizeScheduleResponse, normalizeLinescore } from "../src/embeddedjs/scores.js";
 
   const liveFixture = {
     dates: [{ games: [{
-      gamePk: 717465,
-      gameDate: "2026-05-31T23:10:00Z",
+      gamePk: 717465, gameDate: "2026-05-31T23:10:00Z",
       status: { detailedState: "In Progress" },
       teams: {
         away: { team: { id: 147, abbreviation: "NYY", shortName: "Yankees" }, score: 4 },
         home: { team: { id: 111, abbreviation: "BOS", shortName: "Red Sox" }, score: 2 },
       },
-      linescore: {
-        currentInning: 7, inningHalf: "Bottom", outs: 2, balls: 3, strikes: 1,
-        offense: { first: { id: 1 }, third: { id: 2 } },
-      },
+      linescore: { currentInning: 7, inningHalf: "Bottom", outs: 2, balls: 3, strikes: 1,
+        offense: { first: { id: 1 }, third: { id: 2 } } },
     }]}],
   };
 
   const gs = normalizeScheduleResponse(liveFixture, 147);
-  trace(`status=${gs.status} myScore=${gs.myScore} theirScore=${gs.theirScore}\n`);
-  trace(`inning=${gs.inning} half=${gs.inningHalf} outs=${gs.outs}\n`);
-  trace(`first=${gs.first} second=${gs.second} third=${gs.third}\n`);
+  assert.equal(gs.status, "live");
+  assert.equal(gs.myScore, 4);
+  assert.equal(gs.theirScore, 2);
+  assert.equal(gs.inning, 7);
+  assert.equal(gs.inningHalf, "Bot");
+  assert.deepEqual([gs.first, gs.second, gs.third], [true, false, true]);
+
+  // inningHalf preserved when the linescore payload omits it
+  const u = normalizeLinescore({ teams:{home:{runs:3},away:{runs:5}}, currentInning:8 }, gs);
+  assert.equal(u.inningHalf, "Bot");
+  assert.equal(u.theirScore, 3); // away team is "mine" (isHome=false), home runs are theirs
+  console.log("scores normalisation: all assertions passed");
   ```
 
-  Run in emulator. Expected console output:
-  ```
-  status=live myScore=4 theirScore=2
-  inning=7 half=Bot outs=2
-  first=true second=false third=true
-  ```
+  > `scores.js` uses `export` (ES modules) and no Pebble globals in these functions, so Node can import it directly. If Node complains about the bare `?.`/`??`, the installed Node 22 supports them natively. The fetch functions added in Task 4 reference the global `fetch` — keep them below the normalisers; Node won't execute them during this import.
 
-  Remove the fixture code after verifying.
+  Run: `node test/scores.test.mjs` → expect `scores normalisation: all assertions passed`.
+
+  Optionally also `console.log` the same in the emulator to confirm parity on-device.
 
 - [ ] **Step 6: Commit**
 
   ```bash
-  git add src/scores.js src/index.js
-  git commit -m "feat: add scores normalisation functions"
+  git add src/embeddedjs/scores.js test/scores.test.mjs
+  git commit -m "feat: add scores normalisation + Node unit tests"
   ```
 
 ---
 
 ## Task 4: scores.js — fetch functions + scores.stub.js
 
-**Files:**
-- Modify: `src/scores.js` (add fetch functions)
-- Create: `src/scores.stub.js`
+**Files:** Modify `src/embeddedjs/scores.js`; create `src/embeddedjs/scores.stub.js`
 
 - [ ] **Step 1: Add fetch functions to scores.js**
 
+  `fetch` is a real global in embedded JS (routes through the phone proxy) and returns a standard `Response`. Note the **local** date formatter (UTC would roll evening US games to the next day).
+
   ```js
-  // src/scores.js (continued — add after normalisation functions)
+  // src/embeddedjs/scores.js (continued — after the normalisers)
 
   const SCHEDULE = "https://statsapi.mlb.com/api/v1/schedule";
   const GAME     = "https://statsapi.mlb.com/api/v1/game";
 
-  function isoDate(date) {
-    return date.toISOString().split("T")[0];
+  // Local calendar date (NOT UTC) — matches how a user perceives "today".
+  function isoDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
   }
 
   export async function fetchTodayGame(teamId) {
     const today = isoDate(new Date());
-    const res   = await fetch(`${SCHEDULE}?sportId=1&teamId=${teamId}&date=${today}&hydrate=linescore`);
+    const res   = await fetch(`${SCHEDULE}?sportId=1&teamId=${teamId}&date=${today}&hydrate=team,linescore`);
     const data  = await res.json();
     const state = normalizeScheduleResponse(data, teamId);
     if (!state) {
-      // No game today — look up next game
-      const end     = isoDate(new Date(Date.now() + 14 * 86400000));
+      // No game today — look up the next game in the next 14 days.
       const tomorrow = isoDate(new Date(Date.now() +  1 * 86400000));
-      const nextRes  = await fetch(`${SCHEDULE}?sportId=1&teamId=${teamId}&startDate=${tomorrow}&endDate=${end}`);
+      const end      = isoDate(new Date(Date.now() + 14 * 86400000));
+      const nextRes  = await fetch(`${SCHEDULE}?sportId=1&teamId=${teamId}&startDate=${tomorrow}&endDate=${end}&hydrate=team`);
       const nextData = await nextRes.json();
       const next     = normalizeNextGame(nextData, teamId);
       return {
@@ -383,146 +512,114 @@ The normalisation functions are pure (no Pebble APIs). Verify them by tracing ou
 
   export async function refreshSchedule(teamId, existing) {
     const today = isoDate(new Date());
-    const res   = await fetch(`${SCHEDULE}?sportId=1&teamId=${teamId}&date=${today}&hydrate=linescore`);
+    const res   = await fetch(`${SCHEDULE}?sportId=1&teamId=${teamId}&date=${today}&hydrate=team,linescore`);
     const data  = await res.json();
-    // Preserve nextOpponent/nextDate/nextTime if we transition to off_day
     const state = normalizeScheduleResponse(data, teamId);
-    if (!state) return existing; // no change if schedule call fails
+    if (!state) return existing; // schedule call returned no game -> keep prior state
     return state;
   }
   ```
 
 - [ ] **Step 2: Create scores.stub.js**
 
-  This is swapped in during emulator testing to exercise all UI states without a phone or live game.
+  Swap into `main.js` imports during display development to exercise all six UI states without a phone or live game.
 
   ```js
-  // src/scores.stub.js
-  // Swap this for "scores" in index.js imports to test all UI states in the emulator.
+  // src/embeddedjs/scores.stub.js
+  // Swap "scores" -> "scores.stub" in main.js imports to test all UI states in the emulator.
 
   const STUBS = [
-    // State 1: live
-    {
-      teamId: 147, teamAbbrev: "NYY", teamName: "Yankees", status: "live",
-      opponent: "BOS", isHome: false, myScore: 4, theirScore: 2,
-      inning: 7, inningHalf: "Bot", outs: 2, balls: 3, strikes: 1,
-      first: true, second: false, third: true,
-      gameTime: null, gameDate: null, nextOpponent: null, nextDate: null, nextTime: null,
-      gamePk: 717465, lastUpdated: Date.now(),
-    },
-    // State 2: scheduled
-    {
-      teamId: 119, teamAbbrev: "LAD", teamName: "Dodgers", status: "scheduled",
-      opponent: "SF", isHome: true, myScore: 0, theirScore: 0,
-      inning: null, inningHalf: null, outs: null, balls: null, strikes: null,
-      first: false, second: false, third: false,
-      gameTime: "7:10 PM", gameDate: "Today",
-      nextOpponent: null, nextDate: null, nextTime: null,
-      gamePk: 717466, lastUpdated: Date.now(),
-    },
-    // State 3: final
-    {
-      teamId: 112, teamAbbrev: "CHC", teamName: "Cubs", status: "final",
-      opponent: "STL", isHome: false, myScore: 3, theirScore: 5,
-      inning: 9, inningHalf: "Bot", outs: 3, balls: null, strikes: null,
-      first: false, second: false, third: false,
-      gameTime: null, gameDate: null, nextOpponent: null, nextDate: null, nextTime: null,
-      gamePk: 717467, lastUpdated: Date.now(),
-    },
-    // State 4: off_day
-    {
-      teamId: 117, teamAbbrev: "HOU", teamName: "Astros", status: "off_day",
-      opponent: null, isHome: null, myScore: null, theirScore: null,
-      inning: null, inningHalf: null, outs: null, balls: null, strikes: null,
-      first: false, second: false, third: false,
-      gameTime: null, gameDate: null,
-      nextOpponent: "TEX", nextDate: "Thu Jun 4", nextTime: "8:10 PM",
-      gamePk: null, lastUpdated: Date.now(),
-    },
-    // State 5: postponed
-    {
-      teamId: 138, teamAbbrev: "STL", teamName: "Cardinals", status: "postponed",
-      opponent: "MIL", isHome: true, myScore: null, theirScore: null,
-      inning: null, inningHalf: null, outs: null, balls: null, strikes: null,
-      first: false, second: false, third: false,
-      gameTime: null, gameDate: null, nextOpponent: null, nextDate: "Jun 5", nextTime: "2:15 PM",
-      gamePk: null, lastUpdated: Date.now(),
-    },
-    // State 6: error (bad API response)
-    {
-      teamId: 137, teamAbbrev: "SF", teamName: "Giants", status: "error",
-      opponent: null, isHome: null, myScore: null, theirScore: null,
-      inning: null, inningHalf: null, outs: null, balls: null, strikes: null,
-      first: false, second: false, third: false,
-      gameTime: null, gameDate: null, nextOpponent: null, nextDate: null, nextTime: null,
-      gamePk: null, lastUpdated: Date.now() - 300000, // 5 min stale — triggers no-connection overlay
-    },
+    { teamId:147, teamAbbrev:"NYY", teamName:"Yankees", status:"live",
+      opponent:"BOS", isHome:false, myScore:4, theirScore:2,
+      inning:7, inningHalf:"Bot", outs:2, balls:3, strikes:1,
+      first:true, second:false, third:true,
+      gameTime:null, gameDate:null, nextOpponent:null, nextDate:null, nextTime:null,
+      gamePk:717465, lastUpdated:Date.now() },
+    { teamId:119, teamAbbrev:"LAD", teamName:"Dodgers", status:"scheduled",
+      opponent:"SF", isHome:true, myScore:0, theirScore:0,
+      inning:null, inningHalf:null, outs:null, balls:null, strikes:null,
+      first:false, second:false, third:false,
+      gameTime:"7:10 PM", gameDate:"Today",
+      nextOpponent:null, nextDate:null, nextTime:null,
+      gamePk:717466, lastUpdated:Date.now() },
+    { teamId:112, teamAbbrev:"CHC", teamName:"Cubs", status:"final",
+      opponent:"STL", isHome:false, myScore:3, theirScore:5,
+      inning:9, inningHalf:"Bot", outs:3, balls:null, strikes:null,
+      first:false, second:false, third:false,
+      gameTime:null, gameDate:null, nextOpponent:null, nextDate:null, nextTime:null,
+      gamePk:717467, lastUpdated:Date.now() },
+    { teamId:117, teamAbbrev:"HOU", teamName:"Astros", status:"off_day",
+      opponent:null, isHome:null, myScore:null, theirScore:null,
+      inning:null, inningHalf:null, outs:null, balls:null, strikes:null,
+      first:false, second:false, third:false,
+      gameTime:null, gameDate:null,
+      nextOpponent:"TEX", nextDate:"Thu Jun 4", nextTime:"8:10 PM",
+      gamePk:null, lastUpdated:Date.now() },
+    { teamId:138, teamAbbrev:"STL", teamName:"Cardinals", status:"postponed",
+      opponent:"MIL", isHome:true, myScore:null, theirScore:null,
+      inning:null, inningHalf:null, outs:null, balls:null, strikes:null,
+      first:false, second:false, third:false,
+      gameTime:null, gameDate:null, nextOpponent:null, nextDate:"Jun 5", nextTime:"2:15 PM",
+      gamePk:null, lastUpdated:Date.now() },
+    { teamId:137, teamAbbrev:"SF", teamName:"Giants", status:"error",
+      opponent:null, isHome:null, myScore:null, theirScore:null,
+      inning:null, inningHalf:null, outs:null, balls:null, strikes:null,
+      first:false, second:false, third:false,
+      gameTime:null, gameDate:null, nextOpponent:null, nextDate:null, nextTime:null,
+      gamePk:null, lastUpdated:Date.now() - 6 * 60 * 1000 }, // 6 min stale -> no-connection overlay
   ];
 
-  export { STUBS }; // exported so Task 5 Step 5 can import directly for one-shot display testing
+  export { STUBS };
 
   let stubIndex = 0;
-
   export async function fetchTodayGame(teamId) {
     const stub = STUBS[stubIndex % STUBS.length];
     stubIndex++;
     return stub;
   }
-
-  export async function fetchLiveGame(gamePk, existing) {
-    return existing; // return unchanged in stub
-  }
-
-  export async function refreshSchedule(teamId, existing) {
-    return existing;
-  }
+  export async function fetchLiveGame(gamePk, existing) { return existing; }
+  export async function refreshSchedule(teamId, existing) { return existing; }
   ```
 
 - [ ] **Step 3: Commit**
 
   ```bash
-  git add src/scores.js src/scores.stub.js
-  git commit -m "feat: add scores fetch functions and test stub"
+  git add src/embeddedjs/scores.js src/embeddedjs/scores.stub.js
+  git commit -m "feat: add scores fetch functions (hydrate=team,linescore; local date) and test stub"
   ```
 
 ---
 
 ## Task 5: display.js — live state + bases diamond
 
-**Files:**
-- Create: `src/display.js`
+**Files:** Create `src/embeddedjs/display.js`
 
-This task builds the most complex state (live). All other states follow the same pattern in Task 6.
+Builds the most complex state (live) first; the rest follow the same pattern in Task 6. Confirm Emery dimensions via `screen.width`/`screen.height` in the emulator. Built-in fonts: `"Gothic 14"`, `"Gothic 18"`, `"Gothic 24 Bold"`, `"Gothic 28 Bold"`, `"Bitham 42 Bold"`.
 
-Piu reference: https://developer.repebble.com/docs/  
-Check `screen.width` and `screen.height` for the actual Emery display dimensions.
-
-- [ ] **Step 1: Write the display scaffold and common styles**
+- [ ] **Step 1: Scaffold and common styles**
 
   ```js
-  // src/display.js
-  import { Application, Container, Label, Content, Row, Column, Skin, Style, Port } from "piu/MC";
+  // src/embeddedjs/display.js
+  import { Application, Container, Label, Content, Row, Column, Skin, Style } from "piu/MC";
 
-  // ---- Colours ----
-  const C_BG      = "#F5F0E8";  // e-paper warm white
-  const C_BLACK   = "#111111";
-  const C_MED     = "#444444";
-  const C_DIM     = "#888888";
-  const C_AMBER   = "#E8A000";  // runner on base
-  const C_EMPTY   = "#CCCCCC";  // empty base
-  const C_RED     = "#CC0000";  // stale banner
-  const C_HOME    = "#999999";  // home plate (always grey)
+  // ---- Colours (Emery is colour e-paper) ----
+  const C_BG    = "#F5F0E8";
+  const C_BLACK = "#111111";
+  const C_MED   = "#444444";
+  const C_DIM   = "#888888";
+  const C_AMBER = "#E8A000";  // runner on base
+  const C_EMPTY = "#CCCCCC";  // empty base
+  const C_RED   = "#CC0000";  // stale banner
 
   // ---- Styles ----
-  // Adjust font sizes after seeing them in the Emery emulator.
-  // Built-in Pebble fonts: "Gothic 14", "Gothic 18", "Gothic 28 Bold", "Bitham 42 Bold"
-  // Alloy also supports embedded custom fonts — see developer.repebble.com/guides/alloy/
   const sTime    = new Style({ font: "Gothic 18",      color: C_BLACK, horizontal: "center" });
   const sScore   = new Style({ font: "Gothic 28 Bold", color: C_BLACK, horizontal: "center" });
+  const sScoreD  = new Style({ font: "Gothic 28 Bold", color: C_DIM,   horizontal: "center" });
   const sTeam    = new Style({ font: "Gothic 14",      color: C_MED,   horizontal: "center" });
+  const sTeamD   = new Style({ font: "Gothic 14",      color: C_DIM,   horizontal: "center" });
   const sInfo    = new Style({ font: "Gothic 14",      color: C_MED,   horizontal: "center" });
   const sSmall   = new Style({ font: "Gothic 14",      color: C_DIM,   horizontal: "center" });
-  const sStale   = new Style({ font: "Gothic 14",      color: "white", horizontal: "center" });
+  const sBadge   = new Style({ font: "Gothic 14",      color: "white", horizontal: "center" });
   const sHeading = new Style({ font: "Gothic 18",      color: C_BLACK, horizontal: "center" });
 
   // ---- Skins ----
@@ -531,116 +628,8 @@ Check `screen.width` and `screen.height` for the actual Emery display dimensions
   const skinBlack = new Skin({ fill: C_BLACK });
   const skinDim   = new Skin({ fill: "#DDDDDD" });
 
-  // ---- Module state ----
-  let app = null;
+  let application = null;   // the Piu Application (default-exported from main.js)
   let mainContainer = null;
-  ```
-
-- [ ] **Step 2: Write the bases diamond helper**
-
-  The diamond is four small squares arranged in a rotated-square pattern.
-  Occupied bases are amber; empty bases are grey.
-
-  ```js
-  // src/display.js (continued)
-
-  function buildBasesDiamond(gs) {
-    // 36w × 28h container, bases at the 4 compass positions
-    const SZ = 8; // square size in px
-    const cx = 14, cy = 10; // center offsets
-
-    function base(x, y, filled) {
-      return new Content(null, {
-        left: x, top: y, width: SZ, height: SZ,
-        skin: new Skin({ fill: filled ? C_AMBER : C_EMPTY }),
-      });
-    }
-
-    return new Container(null, {
-      width: 36, height: 28,
-      contents: [
-        base(cx,      0,      gs.second), // 2nd — top
-        base(cx * 2,  cy,     gs.first),  // 1st — right
-        base(0,       cy,     gs.third),  // 3rd — left
-        base(cx,      cy * 2, false),     // home — always grey
-      ],
-    });
-  }
-  ```
-
-- [ ] **Step 3: Write the cycle dot indicator helper**
-
-  ```js
-  // src/display.js (continued)
-
-  function buildCycleDots(currentSlot, totalSlots) {
-    const DOT = 6;
-    const GAP = 4;
-    const dots = [];
-    for (let i = 0; i < totalSlots; i++) {
-      dots.push(new Content(null, {
-        width: DOT, height: DOT,
-        skin: new Skin({ fill: i === currentSlot ? C_BLACK : C_DIM }),
-        left: i * (DOT + GAP),
-      }));
-    }
-    return new Container(null, {
-      width: totalSlots * (DOT + GAP) - GAP,
-      height: DOT,
-      contents: dots,
-    });
-  }
-  ```
-
-- [ ] **Step 4: Write buildLiveContent**
-
-  ```js
-  // src/display.js (continued)
-
-  function buildLiveContent(gs, slot, total) {
-    const scoreColor = gs.status === "final" ? C_DIM : C_BLACK;
-    const scoreStyle = gs.status === "final"
-      ? new Style({ font: "Gothic 28 Bold", color: C_DIM, horizontal: "center" })
-      : sScore;
-
-    return new Column(null, {
-      width: screen.width, height: screen.height,
-      skin: skinBg,
-      contents: [
-        // Time
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        // Teams row
-        new Row(null, {
-          top: 4, width: screen.width,
-          contents: [
-            new Column(null, { width: screen.width * 0.4,
-              contents: [
-                new Label(null, { string: gs.teamAbbrev,  style: sTeam }),
-                new Label(null, { string: String(gs.myScore),    style: scoreStyle }),
-              ]}),
-            new Label(null, { string: "–", style: sScore }),
-            new Column(null, { width: screen.width * 0.4,
-              contents: [
-                new Label(null, { string: gs.opponent,    style: sTeam }),
-                new Label(null, { string: String(gs.theirScore), style: scoreStyle }),
-              ]}),
-          ],
-        }),
-        // Inning + outs
-        new Label(null, {
-          top: 2,
-          string: `${gs.inningHalf === "Bot" ? "▼" : "▲"} ${gs.inningHalf} ${gs.inning}  •  ${gs.outs} out${gs.outs !== 1 ? "s" : ""}`,
-          style: sInfo,
-        }),
-        // Bases diamond
-        buildBasesDiamond(gs),
-        // Count
-        new Label(null, { top: 2, string: `B:${gs.balls}  S:${gs.strikes}`, style: sSmall }),
-        // Cycle dots
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
-  }
 
   function formatWatchTime() {
     const d = new Date();
@@ -651,274 +640,246 @@ Check `screen.width` and `screen.height` for the actual Emery display dimensions
   }
   ```
 
-- [ ] **Step 5: Wire to a stub, run in emulator, verify live state layout**
-
-  In `src/index.js`, temporarily add:
+- [ ] **Step 2: Bases diamond helper**
 
   ```js
-  import { createWatchface, updateDisplay } from "display";
-  import { STUBS } from "scores.stub"; // import the stub array directly for testing
+  // src/embeddedjs/display.js (continued)
+  function base(x, y, sz, filled) {
+    return new Content(null, { left: x, top: y, width: sz, height: sz,
+      skin: new Skin({ fill: filled ? C_AMBER : C_EMPTY }) });
+  }
 
-  const app = createWatchface();
-  updateDisplay(STUBS[0], 0, 3); // slot 0 of 3
-  ```
-
-  Add to `src/display.js`:
-
-  ```js
-  export function createWatchface() {
-    mainContainer = new Container(null, { width: screen.width, height: screen.height, skin: skinBg });
-    app = new Application(null, { skin: skinBg, contents: [mainContainer] });
-    return app;
+  function buildBasesDiamond(gs) {
+    const SZ = 8, cx = 14, cy = 10;
+    return new Container(null, {
+      width: 36, height: 28,
+      contents: [
+        base(cx,     0,      SZ, gs.second), // 2nd — top
+        base(cx * 2, cy,     SZ, gs.first),  // 1st — right
+        base(0,      cy,     SZ, gs.third),  // 3rd — left
+        base(cx,     cy * 2, SZ, false),     // home — always grey
+      ],
+    });
   }
   ```
 
-  Run in Emery emulator. Verify: time shows, score shows large, inning/outs shows, bases diamond has amber squares on 1st and 3rd, B:3 S:1 shows, 3 dots with first dot filled.
+- [ ] **Step 3: Cycle-dots helper**
 
-  Tweak font sizes and spacing until it looks right at Emery's resolution.
+  ```js
+  // src/embeddedjs/display.js (continued)
+  function buildCycleDots(currentSlot, totalSlots) {
+    const DOT = 6, GAP = 4, dots = [];
+    for (let i = 0; i < totalSlots; i++) {
+      dots.push(new Content(null, { width: DOT, height: DOT, left: i * (DOT + GAP),
+        skin: new Skin({ fill: i === currentSlot ? C_BLACK : C_DIM }) }));
+    }
+    return new Container(null, { width: totalSlots * (DOT + GAP) - GAP, height: DOT, contents: dots });
+  }
+  ```
+
+- [ ] **Step 4: buildLiveContent**
+
+  ```js
+  // src/embeddedjs/display.js (continued)
+  function buildLiveContent(gs, slot, total) {
+    return new Column(null, {
+      width: screen.width, height: screen.height, skin: skinBg,
+      contents: [
+        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+        new Row(null, { top: 4, width: screen.width, contents: [
+          new Column(null, { width: screen.width * 0.4, contents: [
+            new Label(null, { string: gs.teamAbbrev, style: sTeam }),
+            new Label(null, { string: String(gs.myScore), style: sScore }),
+          ]}),
+          new Label(null, { string: "–", style: sScore }),
+          new Column(null, { width: screen.width * 0.4, contents: [
+            new Label(null, { string: gs.opponent, style: sTeam }),
+            new Label(null, { string: String(gs.theirScore), style: sScore }),
+          ]}),
+        ]}),
+        new Label(null, { top: 2,
+          string: `${gs.inningHalf === "Bot" ? "▼" : "▲"} ${gs.inningHalf} ${gs.inning}  •  ${gs.outs} out${gs.outs !== 1 ? "s" : ""}`,
+          style: sInfo }),
+        buildBasesDiamond(gs),
+        new Label(null, { top: 2, string: `B:${gs.balls}  S:${gs.strikes}`, style: sSmall }),
+        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+      ],
+    });
+  }
+  ```
+
+- [ ] **Step 5: Mount and verify the live state**
+
+  Add the public mount helper (used by all states):
+
+  ```js
+  // src/embeddedjs/display.js (continued)
+  export function createWatchface() {
+    mainContainer = new Container(null, { width: screen.width, height: screen.height, skin: skinBg });
+    application = new Application(null, { skin: skinBg, contents: [mainContainer] });
+    return application;   // main.js default-exports this so the launcher mounts it as root
+  }
+  ```
+
+  Temporary test in `main.js` (entry module must default-export the Application):
+
+  ```js
+  import { createWatchface, updateDisplay } from "display";
+  import { STUBS } from "scores.stub";
+  const app = createWatchface();
+  updateDisplay(STUBS[0], 0, 3);   // updateDisplay added in Task 6 — stub it returning live content for now
+  export default app;
+  ```
+
+  Run in the Emery emulator. Verify: time, large score, inning/outs line, amber squares on 1st + 3rd, `B:3 S:1`, 3 dots with the first filled. Tune fonts/spacing to Emery's resolution. If nothing renders, check the "Piu watchface mount" note at the top before continuing.
 
 - [ ] **Step 6: Commit**
 
   ```bash
-  git add src/display.js
-  git commit -m "feat: add display.js live state and bases diamond"
+  git add src/embeddedjs/display.js src/embeddedjs/main.js
+  git commit -m "feat: add display live state + bases diamond"
   ```
 
 ---
 
 ## Task 6: display.js — remaining states + public API
 
-**Files:**
-- Modify: `src/display.js`
+**Files:** Modify `src/embeddedjs/display.js`
 
-- [ ] **Step 1: Write buildScheduledContent**
+- [ ] **Step 1: buildScheduledContent**
 
   ```js
-  // src/display.js (continued)
-
   function buildScheduledContent(gs, slot, total) {
-    return new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Container(null, {
-          top: 8, width: screen.width, height: 1, skin: skinDim,
-        }),
-        new Column(null, {
-          top: 6,
-          contents: [
-            new Label(null, { string: gs.teamName ?? gs.teamAbbrev, style: sHeading }),
-          ],
-        }),
-        new Container(null, {
-          top: 6, width: screen.width, height: 1, skin: skinDim,
-        }),
-        new Column(null, {
-          top: 8,
-          contents: [
-            new Label(null, { string: `vs ${gs.opponent}  •  ${gs.gameDate}`, style: sInfo }),
-            new Label(null, { top: 2, string: gs.gameTime, style: sScore }),
-          ],
-        }),
-        new Label(null, { top: 4, string: "game not yet started", style: sSmall }),
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
+    return new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Container(null, { top: 8, width: screen.width, height: 1, skin: skinDim }),
+      new Label(null, { top: 6, string: gs.teamName ?? gs.teamAbbrev, style: sHeading }),
+      new Container(null, { top: 6, width: screen.width, height: 1, skin: skinDim }),
+      new Label(null, { top: 8, string: `vs ${gs.opponent}  •  ${gs.gameDate}`, style: sInfo }),
+      new Label(null, { top: 2, string: gs.gameTime, style: sScore }),
+      new Label(null, { top: 4, string: "game not yet started", style: sSmall }),
+      new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+    ]});
   }
   ```
 
-- [ ] **Step 2: Write buildFinalContent**
+- [ ] **Step 2: buildFinalContent**
 
   ```js
-  // src/display.js (continued)
-
   function buildFinalContent(gs, slot, total) {
-    const dimScore = new Style({ font: "Gothic 28 Bold", color: C_DIM, horizontal: "center" });
-    const dimTeam  = new Style({ font: "Gothic 14",      color: C_DIM, horizontal: "center" });
     const won = gs.myScore > gs.theirScore;
-
-    return new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Row(null, {
-          top: 8, width: screen.width,
-          contents: [
-            new Column(null, { width: screen.width * 0.4, contents: [
-              new Label(null, { string: gs.teamAbbrev,          style: dimTeam }),
-              new Label(null, { string: String(gs.myScore),     style: dimScore }),
-            ]}),
-            new Label(null, { string: "–", style: dimScore }),
-            new Column(null, { width: screen.width * 0.4, contents: [
-              new Label(null, { string: gs.opponent,            style: dimTeam }),
-              new Label(null, { string: String(gs.theirScore),  style: dimScore }),
-            ]}),
-          ],
-        }),
-        // FINAL badge
-        new Container(null, {
-          top: 8, height: 18, width: 60, skin: skinBlack,
-          contents: [new Label(null, { string: "FINAL", style: sStale })],
-        }),
-        new Label(null, {
-          top: 4,
-          string: `${won ? gs.teamAbbrev : gs.opponent} wins`,
-          style: sSmall,
-        }),
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
+    return new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Row(null, { top: 8, width: screen.width, contents: [
+        new Column(null, { width: screen.width * 0.4, contents: [
+          new Label(null, { string: gs.teamAbbrev, style: sTeamD }),
+          new Label(null, { string: String(gs.myScore), style: sScoreD }),
+        ]}),
+        new Label(null, { string: "–", style: sScoreD }),
+        new Column(null, { width: screen.width * 0.4, contents: [
+          new Label(null, { string: gs.opponent, style: sTeamD }),
+          new Label(null, { string: String(gs.theirScore), style: sScoreD }),
+        ]}),
+      ]}),
+      new Container(null, { top: 8, height: 18, width: 60, skin: skinBlack,
+        contents: [new Label(null, { string: "FINAL", style: sBadge })] }),
+      new Label(null, { top: 4, string: `${won ? gs.teamAbbrev : gs.opponent} wins`, style: sSmall }),
+      new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+    ]});
   }
   ```
 
-- [ ] **Step 3: Write buildOffDayContent**
+- [ ] **Step 3: buildOffDayContent**
 
   ```js
-  // src/display.js (continued)
-
   function buildOffDayContent(gs, slot, total) {
-    return new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Container(null, { top: 8, width: screen.width, height: 1, skin: skinDim }),
-        new Label(null, { top: 6, string: gs.teamName ?? gs.teamAbbrev, style: sHeading }),
-        new Container(null, { top: 6, width: screen.width, height: 1, skin: skinDim }),
-        new Column(null, {
-          top: 8,
-          contents: [
-            new Label(null, { string: "next game",           style: sSmall }),
-            new Label(null, { top: 2, string: `vs ${gs.nextOpponent}`, style: sInfo }),
-            new Label(null, { top: 2, string: gs.nextDate,   style: sHeading }),
-            new Label(null, { top: 2, string: gs.nextTime,   style: sInfo }),
-          ],
-        }),
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
+    return new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Container(null, { top: 8, width: screen.width, height: 1, skin: skinDim }),
+      new Label(null, { top: 6, string: gs.teamName ?? gs.teamAbbrev ?? "—", style: sHeading }),
+      new Container(null, { top: 6, width: screen.width, height: 1, skin: skinDim }),
+      new Label(null, { top: 8, string: "next game", style: sSmall }),
+      new Label(null, { top: 2, string: `vs ${gs.nextOpponent ?? "TBD"}`, style: sInfo }),
+      new Label(null, { top: 2, string: gs.nextDate ?? "", style: sHeading }),
+      new Label(null, { top: 2, string: gs.nextTime ?? "", style: sInfo }),
+      new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+    ]});
   }
   ```
 
-- [ ] **Step 4: Write buildPostponedContent**
+  > Note: `teamName`/`teamAbbrev` are `null` for off-day (the schedule call returned no game). If you want the team name shown on an off day, carry it forward from the last known `GameState` in `main.js` rather than from the off-day fetch.
+
+- [ ] **Step 4: buildPostponedContent**
 
   ```js
-  // src/display.js (continued)
-
   function buildPostponedContent(gs, slot, total) {
-    return new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Label(null, { top: 12, string: gs.teamAbbrev, style: sHeading }),
-        new Container(null, {
-          top: 8, height: 18, width: 46, skin: skinBlack,
-          contents: [new Label(null, { string: "PPD", style: sStale })],
-        }),
-        new Label(null, {
-          top: 6,
-          string: gs.nextDate ? `Rescheduled: ${gs.nextDate}` : "Rescheduled TBD",
-          style: sSmall,
-        }),
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
+    return new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Label(null, { top: 12, string: gs.teamAbbrev ?? "—", style: sHeading }),
+      new Container(null, { top: 8, height: 18, width: 46, skin: skinBlack,
+        contents: [new Label(null, { string: "PPD", style: sBadge })] }),
+      new Label(null, { top: 6, string: gs.nextDate ? `Rescheduled: ${gs.nextDate}` : "Rescheduled TBD", style: sSmall }),
+      new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+    ]});
   }
   ```
 
-- [ ] **Step 5: Write buildErrorContent**
-
-  Shown when `scores.js` returns `status: "error"` (malformed API response).
+- [ ] **Step 5: buildErrorContent**
 
   ```js
-  // src/display.js (continued)
-
   function buildErrorContent(gs, slot, total) {
-    return new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Label(null, { top: 12, string: gs.teamAbbrev ?? "—", style: sHeading }),
-        new Label(null, { top: 8, string: "Data unavailable", style: sSmall }),
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
+    return new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Label(null, { top: 12, string: gs.teamAbbrev ?? "—", style: sHeading }),
+      new Label(null, { top: 8, string: "Data unavailable", style: sSmall }),
+      new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+    ]});
   }
   ```
 
-- [ ] **Step 6: Write buildConnectingContent then buildContent**
-
-  Define `buildConnectingContent` first — `buildContent` calls it, and Moddable's JS engine may not hoist function declarations.
+- [ ] **Step 6: buildConnectingContent + buildContent (with stale overlay)**
 
   ```js
-  // src/display.js (continued)
+  const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
-  const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-
-  // Must be defined before buildContent, which calls it.
   function buildConnectingContent(slot, total) {
-    return new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Label(null, { top: 20, string: "Connecting…", style: sInfo }),
-        new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
-      ],
-    });
+    return new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Label(null, { top: 20, string: "Connecting…", style: sInfo }),
+      new Container(null, { bottom: 4, contents: [buildCycleDots(slot, total)] }),
+    ]});
   }
 
   function buildContent(gs, slot, total) {
-    // No-connection overlay: if data is stale, wrap the normal content
-    const isStale = gs && (Date.now() - gs.lastUpdated > STALE_THRESHOLD_MS);
-
     let inner;
     if (!gs) {
       inner = buildConnectingContent(slot, total);
     } else {
       switch (gs.status) {
-        case "live":       inner = buildLiveContent(gs, slot, total);       break;
-        case "scheduled":  inner = buildScheduledContent(gs, slot, total);  break;
-        case "final":      inner = buildFinalContent(gs, slot, total);      break;
-        case "off_day":    inner = buildOffDayContent(gs, slot, total);     break;
-        case "postponed":  inner = buildPostponedContent(gs, slot, total);  break;
-        default:           inner = buildErrorContent(gs, slot, total);      break;
+        case "live":      inner = buildLiveContent(gs, slot, total); break;
+        case "scheduled": inner = buildScheduledContent(gs, slot, total); break;
+        case "final":     inner = buildFinalContent(gs, slot, total); break;
+        case "off_day":   inner = buildOffDayContent(gs, slot, total); break;
+        case "postponed": inner = buildPostponedContent(gs, slot, total); break;
+        default:          inner = buildErrorContent(gs, slot, total); break;
       }
     }
 
+    const isStale = gs && (Date.now() - gs.lastUpdated > STALE_THRESHOLD_MS);
     if (!isStale) return inner;
 
-    // Wrap in a Container with the stale overlay on top
     const ageMin = Math.floor((Date.now() - gs.lastUpdated) / 60000);
-    return new Container(null, {
-      width: screen.width, height: screen.height,
-      contents: [
-        inner,
-        new Container(null, {
-          bottom: 18, width: screen.width, height: 18, skin: skinRed,
-          contents: [
-            new Label(null, {
-              string: `⚠ last update: ${ageMin}m ago`,
-              style: sStale,
-            }),
-          ],
-        }),
-      ],
-    });
+    return new Container(null, { width: screen.width, height: screen.height, contents: [
+      inner,
+      new Container(null, { bottom: 18, width: screen.width, height: 18, skin: skinRed,
+        contents: [new Label(null, { string: `⚠ last update: ${ageMin}m ago`, style: sBadge })] }),
+    ]});
   }
   ```
 
-- [ ] **Step 7: Write the public API**
+- [ ] **Step 7: Public API**
 
   ```js
-  // src/display.js (continued)
-
-  export function createWatchface() {
-    mainContainer = new Container(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-    });
-    app = new Application(null, { skin: skinBg, contents: [mainContainer] });
-    return app;
-  }
-
   export function updateDisplay(gs, slot, total) {
     if (!mainContainer) return;
     mainContainer.empty();
@@ -928,335 +889,247 @@ Check `screen.width` and `screen.height` for the actual Emery display dimensions
   export function renderUnconfigured() {
     if (!mainContainer) return;
     mainContainer.empty();
-    mainContainer.add(new Column(null, {
-      width: screen.width, height: screen.height, skin: skinBg,
-      contents: [
-        new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
-        new Label(null, { top: 20, string: "Open settings", style: sInfo }),
-        new Label(null, { top: 4, string: "to pick a team", style: sSmall }),
-      ],
-    }));
+    mainContainer.add(new Column(null, { width: screen.width, height: screen.height, skin: skinBg, contents: [
+      new Label(null, { top: 4, string: formatWatchTime(), style: sTime }),
+      new Label(null, { top: 20, string: "Open settings", style: sInfo }),
+      new Label(null, { top: 4, string: "to pick a team", style: sSmall }),
+    ]}));
   }
   ```
 
-- [ ] **Step 8: Verify all states in emulator using scores.stub.js**
+  (`createWatchface` from Task 5 Step 5 stays as the single Application factory.)
 
-  In `src/index.js`, temporarily cycle through all stubs:
+- [ ] **Step 8: Verify all states via scores.stub.js**
+
+  Temporary `main.js`:
 
   ```js
   import { createWatchface, updateDisplay } from "display";
-  import { fetchTodayGame } from "scores.stub"; // swap to stub
-
+  import { fetchTodayGame } from "scores.stub";
   const app = createWatchface();
   let i = 0;
-
-  Timer.repeat(() => {
-    fetchTodayGame(i).then(gs => updateDisplay(gs, i % 3, 3));
-    i++;
-  }, 3000); // cycle every 3s to see all states quickly
+  setInterval(() => { fetchTodayGame(i).then(gs => updateDisplay(gs, i % 3, 3)); i++; }, 3000);
+  export default app;
   ```
 
-  Run in emulator. Watch each state appear in turn:
-  - Live: large score, bases, count
-  - Scheduled: team name, start time
-  - Final: dimmed score, FINAL badge
-  - Off Day: team name, next game info
-  - Postponed: PPD badge
-  - Error/stale: ⚠ banner (note the stale stub has `lastUpdated` 5 min ago)
-
-  Verify no text clipping on long team names ("Cardinals", "Diamondbacks"). Adjust spacing as needed.
+  Run; watch each state cycle every 3s: live (score/bases/count), scheduled (name/time), final (dimmed + FINAL), off-day (next game), postponed (PPD), error/stale (⚠ banner — the stub is 6 min stale). Check long names ("Cardinals", "Diamondbacks") don't clip.
 
 - [ ] **Step 9: Commit**
 
   ```bash
-  git add src/display.js
-  git commit -m "feat: add all display states and no-connection overlay"
+  git add src/embeddedjs/display.js src/embeddedjs/main.js
+  git commit -m "feat: add all display states + no-connection overlay"
   ```
 
 ---
 
 ## Task 7: clay-config.json
 
-**Files:**
-- Create: `config/clay-config.json`
+**Files:** Create `src/pkjs/clay-config.json` (required by `src/pkjs/index.js`)
 
-- [ ] **Step 1: Create clay-config.json with all 30 teams**
+- [ ] **Step 1: Create the Clay config with all 30 teams**
 
-  Teams are sorted alphabetically within each league. Values are official MLB team IDs.
+  Lives in `src/pkjs/` so `pkjs/index.js` can `require("./clay-config.json")`. Values are official MLB team IDs. Replace `"__SAME_AS_TEAM1__"` in team2/team3 with the same options array as team1 (Clay does not support shared option references).
 
   ```json
   [
-    {
-      "type": "heading",
-      "defaultValue": "Baseball Scores",
-      "size": 1
-    },
-    {
-      "type": "section",
-      "items": [
-        {
-          "type": "text",
-          "defaultValue": "Teams to track"
-        },
-        {
-          "type": "select",
-          "messageKey": "team1",
-          "label": "Team 1",
-          "defaultValue": "0",
-          "options": [
-            { "label": "— None —",                "value": "0"   },
-            { "label": "Arizona Diamondbacks",    "value": "109" },
-            { "label": "Atlanta Braves",          "value": "144" },
-            { "label": "Baltimore Orioles",       "value": "110" },
-            { "label": "Boston Red Sox",          "value": "111" },
-            { "label": "Chicago Cubs",            "value": "112" },
-            { "label": "Chicago White Sox",       "value": "145" },
-            { "label": "Cincinnati Reds",         "value": "113" },
-            { "label": "Cleveland Guardians",     "value": "114" },
-            { "label": "Colorado Rockies",        "value": "115" },
-            { "label": "Detroit Tigers",          "value": "116" },
-            { "label": "Houston Astros",          "value": "117" },
-            { "label": "Kansas City Royals",      "value": "118" },
-            { "label": "Los Angeles Angels",      "value": "108" },
-            { "label": "Los Angeles Dodgers",     "value": "119" },
-            { "label": "Miami Marlins",           "value": "146" },
-            { "label": "Milwaukee Brewers",       "value": "158" },
-            { "label": "Minnesota Twins",         "value": "142" },
-            { "label": "New York Mets",           "value": "121" },
-            { "label": "New York Yankees",        "value": "147" },
-            { "label": "Oakland Athletics",       "value": "133" },
-            { "label": "Philadelphia Phillies",   "value": "143" },
-            { "label": "Pittsburgh Pirates",      "value": "134" },
-            { "label": "San Diego Padres",        "value": "135" },
-            { "label": "San Francisco Giants",    "value": "137" },
-            { "label": "Seattle Mariners",        "value": "136" },
-            { "label": "St. Louis Cardinals",     "value": "138" },
-            { "label": "Tampa Bay Rays",          "value": "139" },
-            { "label": "Texas Rangers",           "value": "140" },
-            { "label": "Toronto Blue Jays",       "value": "141" },
-            { "label": "Washington Nationals",    "value": "120" }
-          ]
-        },
-        {
-          "type": "select",
-          "messageKey": "team2",
-          "label": "Team 2",
-          "defaultValue": "0",
-          "options": "__SAME_AS_TEAM1__"
-        },
-        {
-          "type": "select",
-          "messageKey": "team3",
-          "label": "Team 3",
-          "defaultValue": "0",
-          "options": "__SAME_AS_TEAM1__"
-        }
-      ]
-    },
-    {
-      "type": "section",
-      "items": [
-        {
-          "type": "text",
-          "defaultValue": "Display"
-        },
-        {
-          "type": "range",
-          "messageKey": "cycleInterval",
-          "label": "Cycle interval (seconds)",
-          "defaultValue": 15,
-          "min": 5,
-          "max": 60,
-          "step": 5
-        },
-        {
-          "type": "range",
-          "messageKey": "pollInterval",
-          "label": "Refresh interval (seconds)",
-          "defaultValue": 60,
-          "min": 30,
-          "max": 300,
-          "step": 30
-        }
-      ]
-    },
-    {
-      "type": "text",
-      "defaultValue": "Refresh only applies to live games. Scheduled and off-day slots update every 5 min automatically."
-    }
+    { "type": "heading", "defaultValue": "Baseball Scores", "size": 1 },
+    { "type": "section", "items": [
+      { "type": "text", "defaultValue": "Teams to track" },
+      { "type": "select", "messageKey": "team1", "label": "Team 1", "defaultValue": "0",
+        "options": [
+          { "label": "— None —",             "value": "0"   },
+          { "label": "Arizona Diamondbacks", "value": "109" },
+          { "label": "Athletics",            "value": "133" },
+          { "label": "Atlanta Braves",       "value": "144" },
+          { "label": "Baltimore Orioles",    "value": "110" },
+          { "label": "Boston Red Sox",       "value": "111" },
+          { "label": "Chicago Cubs",         "value": "112" },
+          { "label": "Chicago White Sox",    "value": "145" },
+          { "label": "Cincinnati Reds",      "value": "113" },
+          { "label": "Cleveland Guardians",  "value": "114" },
+          { "label": "Colorado Rockies",     "value": "115" },
+          { "label": "Detroit Tigers",       "value": "116" },
+          { "label": "Houston Astros",       "value": "117" },
+          { "label": "Kansas City Royals",   "value": "118" },
+          { "label": "Los Angeles Angels",   "value": "108" },
+          { "label": "Los Angeles Dodgers",  "value": "119" },
+          { "label": "Miami Marlins",        "value": "146" },
+          { "label": "Milwaukee Brewers",    "value": "158" },
+          { "label": "Minnesota Twins",      "value": "142" },
+          { "label": "New York Mets",        "value": "121" },
+          { "label": "New York Yankees",     "value": "147" },
+          { "label": "Philadelphia Phillies","value": "143" },
+          { "label": "Pittsburgh Pirates",   "value": "134" },
+          { "label": "San Diego Padres",     "value": "135" },
+          { "label": "San Francisco Giants", "value": "137" },
+          { "label": "Seattle Mariners",     "value": "136" },
+          { "label": "St. Louis Cardinals",  "value": "138" },
+          { "label": "Tampa Bay Rays",       "value": "139" },
+          { "label": "Texas Rangers",        "value": "140" },
+          { "label": "Toronto Blue Jays",    "value": "141" },
+          { "label": "Washington Nationals", "value": "120" }
+        ] },
+      { "type": "select", "messageKey": "team2", "label": "Team 2", "defaultValue": "0", "options": "__SAME_AS_TEAM1__" },
+      { "type": "select", "messageKey": "team3", "label": "Team 3", "defaultValue": "0", "options": "__SAME_AS_TEAM1__" }
+    ] },
+    { "type": "section", "items": [
+      { "type": "text", "defaultValue": "Display" },
+      { "type": "range", "messageKey": "cycleInterval", "label": "Cycle interval (seconds)", "defaultValue": 15, "min": 5,  "max": 60,  "step": 5  },
+      { "type": "range", "messageKey": "pollInterval",  "label": "Refresh interval (seconds)", "defaultValue": 60, "min": 30, "max": 300, "step": 30 }
+    ] },
+    { "type": "text", "defaultValue": "Refresh only applies to live games. Scheduled and off-day slots update every 5 min automatically." }
   ]
   ```
 
-  > **Note:** Replace `"__SAME_AS_TEAM1__"` in team2 and team3 with the same options array as team1. Clay doesn't support shared option references — you must duplicate the array.
-  >
-  > Also verify the Oakland A's current team ID against https://statsapi.mlb.com/api/v1/teams?sportId=1 — the franchise relocated and the ID may have changed.
+  > The Athletics relocated; team ID `133` is used here for the franchise (label "Athletics"). **Verify against** `https://statsapi.mlb.com/api/v1/teams?sportId=1` before release — if the ID changed, update it.
 
-- [ ] **Step 2: Register Clay in package.json**
+- [ ] **Step 2: Confirm package.json wiring (from Task 1 Step 4)**
 
-  In `package.json`, ensure Clay is configured. Check the App Configuration guide at https://developer.repebble.com/guides/user-interfaces/app-configuration/ for the exact key — in most Alloy projects it looks like:
+  `capabilities` includes `"configurable"`, `enableMultiJS` is `true`, and `messageKeys` lists all five keys. Clay is initialised in `src/pkjs/index.js` (Task 1 Step 6). No separate `clay` key is needed in `package.json` — Clay is wired in PKJS code.
 
-  ```json
-  {
-    "pebble": {
-      "capabilities": ["configurable"]
-    },
-    "clay": {
-      "config": "config/clay-config.json"
-    }
-  }
-  ```
+- [ ] **Step 3: Verify the config page opens on device**
 
-- [ ] **Step 3: Verify config page opens on device**
-
-  Install the watchface on the real Pebble. In the Pebble phone app → My Watchfaces → Baseball Scores → Settings. Verify the page opens and shows 3 team dropdowns and 2 sliders. Select a team for Team 1 and Save.
+  Install on the Pebble. Phone app → My Watchfaces → Baseball Scores → Settings (gear). Confirm 3 team dropdowns + 2 sliders render. Pick Team 1 and Save.
 
 - [ ] **Step 4: Commit**
 
   ```bash
-  git add config/clay-config.json package.json
-  git commit -m "feat: add Clay config with all 30 teams and display sliders"
+  git add src/pkjs/clay-config.json package.json
+  git commit -m "feat: add Clay config (30 teams + display sliders) in pkjs"
   ```
 
 ---
 
-## Task 8: index.js — orchestration
+## Task 8: main.js — orchestration
 
-**Files:**
-- Modify: `src/index.js`
+**Files:** Modify `src/embeddedjs/main.js`
 
-- [ ] **Step 1: Write index.js**
+- [ ] **Step 1: Write main.js**
 
   ```js
-  // src/index.js
-  import Proxy from "@moddable/proxy";
+  // src/embeddedjs/main.js — watch entry point.
+  // setInterval/clearInterval are globals (provided by manifest_mod.json) — no timer import.
+  import Message from "pebble/message";
   import { readSettings, writeSettings, teamIds } from "settings";
   import { fetchTodayGame, fetchLiveGame, refreshSchedule } from "scores";
   import { createWatchface, updateDisplay, renderUnconfigured } from "display";
 
-  // ---- Bootstrap ----
-  const settings    = readSettings();
-  const configured  = teamIds(settings);  // [teamId, ...] with id > 0
+  let settings   = readSettings();
+  let configured = teamIds(settings);
+  let states     = [];
+  let currentSlot = 0;
+  let cycleTimer = null, pollTimer = null, scheduleTimer = null;
+  let connectedBound = false;
 
-  const app = createWatchface();
+  const app = createWatchface();   // Application instance — default-exported below
 
-  if (configured.length === 0) {
-    renderUnconfigured();
-  } else {
-    startApp(settings, configured);
-  }
+  // Keep the clock fresh every minute, independent of cycle/fetch.
+  watch.addEventListener("minutechange", () => {
+    if (configured.length) updateDisplay(states[currentSlot], currentSlot, configured.length);
+  });
 
-  // ---- Listen for Clay settings updates ----
-  // Clay sends a "settings" message via the proxy when the user saves config.
-  // The proxy must be connected for this to arrive.
-  // See: https://developer.repebble.com/guides/user-interfaces/app-configuration/
-  //
-  // NOTE: The Alloy API for restarting the watchface is not well-documented.
-  // If `System.restart()` does not exist in the Alloy runtime, implement a
-  // hot-swap instead: call writeSettings, then update the cycle/poll timers
-  // and re-run fetchAllSchedules with the new teamIds. For v1 simplicity,
-  // the restart approach is preferred — check developer.repebble.com/docs/
-  // for the correct API.
-  function onSettingsReceived(incoming) {
-    writeSettings(incoming);
-    if (typeof System !== "undefined" && typeof System.restart === "function") {
-      System.restart();
+  // Receive Clay settings saved on the phone (AppMessage -> Message).
+  const configMsg = new Message({
+    keys: ["team1", "team2", "team3", "cycleInterval", "pollInterval"],
+    onReadable() {
+      const msg = this.read();
+      const incoming = {};
+      msg.forEach((value, key) => { incoming[key] = value; });
+      writeSettings(incoming);
+      applySettings();             // hot-reload — no System.restart needed
+    },
+  });
+
+  if (configured.length === 0) renderUnconfigured();
+  else start();
+
+  function start() {
+    states = new Array(configured.length).fill(null);
+    currentSlot = 0;
+    updateDisplay(null, currentSlot, configured.length); // "Connecting…"
+
+    if (watch.connected && watch.connected.pebblekit) {
+      fetchAllSchedules();
+    } else if (!connectedBound) {
+      watch.addEventListener("connected", () => fetchAllSchedules());
+      connectedBound = true;
     }
-    // Fallback: re-fetch all schedules with new settings on next timer tick.
-    // The cycle timer will pick up new teamIds on the next iteration.
+    startTimers();
   }
 
-  // ---- Main app ----
-  function startApp(settings, configured) {
-    // State per slot: null until first fetch resolves
-    const states = new Array(configured.length).fill(null);
-    let currentSlot = 0;
-
-    // Show connecting state immediately
-    updateDisplay(null, currentSlot, configured.length);
-
-    // ---- Proxy ----
-    const proxy = new Proxy();
-
-    proxy.addEventListener("connected", () => {
-      // Initial load — fetch all teams in sequence (not parallel — avoid bursting)
-      fetchAllSchedules(configured, states, settings, proxy);
-    });
-
-    proxy.addEventListener("settings", (event) => {
-      onSettingsReceived(event.data, configured, states, settings, currentSlot);
-    });
-
-    // ---- Cycle timer ----
-    Timer.repeat(() => {
+  function startTimers() {
+    stopTimers();
+    cycleTimer = setInterval(() => {
       currentSlot = (currentSlot + 1) % configured.length;
       updateDisplay(states[currentSlot], currentSlot, configured.length);
     }, settings.cycleInterval * 1000);
 
-    // ---- Poll timer (live games only) ----
-    Timer.repeat(() => {
+    pollTimer = setInterval(() => {
       for (let i = 0; i < configured.length; i++) {
         const gs = states[i];
-        if (gs?.status === "live" && gs.gamePk) {
+        if (gs && gs.status === "live" && gs.gamePk) {
           fetchLiveGame(gs.gamePk, gs)
-            .then(updated => {
-              states[i] = updated;
-              if (i === currentSlot) updateDisplay(updated, currentSlot, configured.length);
-            })
-            .catch(() => {
-              // Leave state as-is; lastUpdated unchanged → stale overlay will appear
-            });
+            .then(u => { states[i] = u; if (i === currentSlot) updateDisplay(u, currentSlot, configured.length); })
+            .catch(() => {}); // leave state; lastUpdated unchanged -> stale overlay appears
         }
       }
     }, settings.pollInterval * 1000);
 
-    // ---- Schedule timer (every 5 min) ----
-    Timer.repeat(() => {
+    scheduleTimer = setInterval(() => {
       for (let i = 0; i < configured.length; i++) {
         refreshSchedule(configured[i], states[i])
-          .then(updated => {
-            states[i] = updated;
-            if (i === currentSlot) updateDisplay(updated, currentSlot, configured.length);
-          })
-          .catch(() => { /* leave stale */ });
+          .then(u => { states[i] = u; if (i === currentSlot) updateDisplay(u, currentSlot, configured.length); })
+          .catch(() => {});
       }
     }, 5 * 60 * 1000);
   }
 
-  async function fetchAllSchedules(teamIdList, states, settings, proxy) {
-    for (let i = 0; i < teamIdList.length; i++) {
-      try {
-        states[i] = await fetchTodayGame(teamIdList[i]);
-      } catch {
-        // leave null — shows connecting/stale state
-      }
-      updateDisplay(states[i], 0, teamIdList.length); // update display as each resolves
+  function stopTimers() {
+    if (cycleTimer)    clearInterval(cycleTimer);
+    if (pollTimer)     clearInterval(pollTimer);
+    if (scheduleTimer) clearInterval(scheduleTimer);
+    cycleTimer = pollTimer = scheduleTimer = null;
+  }
+
+  function applySettings() {
+    settings   = readSettings();
+    configured = teamIds(settings);
+    if (configured.length === 0) { stopTimers(); renderUnconfigured(); return; }
+    start();   // re-init states + timers + re-fetch with the new teams/intervals
+  }
+
+  async function fetchAllSchedules() {
+    // Sequential (not Promise.all) to avoid bursting 3 requests at launch.
+    for (let i = 0; i < configured.length; i++) {
+      try { states[i] = await fetchTodayGame(configured[i]); }
+      catch { /* leave null -> connecting/stale */ }
+      if (i === currentSlot) updateDisplay(states[i], currentSlot, configured.length); // respect current slot
     }
   }
+
+  export default app;   // the launcher mounts the entry module's default export
   ```
 
-- [ ] **Step 2: Remove stub import, restore real scores import**
+- [ ] **Step 2: Restore the real scores import**
 
-  Make sure `src/index.js` imports from `"scores"` not `"scores.stub"`. The stub is only used during display development.
+  Ensure `main.js` imports from `"scores"`, not `"scores.stub"`. The stub is only for Task 5/6 display work.
 
-- [ ] **Step 3: Verify timer logs in emulator**
+- [ ] **Step 3: Verify timers + readiness in the emulator**
 
-  Add temporary traces to confirm all three timers fire:
+  Temporary traces inside `startTimers()`:
 
   ```js
-  // In startApp(), after Timer.repeat calls:
-  trace(`Cycle timer: ${settings.cycleInterval}s\n`);
-  trace(`Poll timer: ${settings.pollInterval}s\n`);
-  trace(`Schedule timer: 300s\n`);
+  console.log(`timers: cycle=${settings.cycleInterval}s poll=${settings.pollInterval}s schedule=300s`);
   ```
 
-  Run in emulator. Console should show the three lines. Remove traces after verifying.
+  Run; confirm the line logs once and that changing settings re-logs it (proving hot-reload via `applySettings` → `startTimers` → `stopTimers`). Remove the trace after verifying.
 
 - [ ] **Step 4: Commit**
 
   ```bash
-  git add src/index.js
-  git commit -m "feat: add index.js orchestration — proxy, three timers, state management"
-  git push
+  git add src/embeddedjs/main.js
+  git commit -m "feat: orchestration — 3x setInterval, watch readiness, Clay Message, minutechange, hot-reload"
   ```
 
 ---
@@ -1265,34 +1138,21 @@ Check `screen.width` and `screen.height` for the actual Emery display dimensions
 
 **Files:** None — verification only.
 
-- [ ] **Step 1: Build and install on device**
+- [ ] **Step 1: Build and install**
 
-  In CloudPebble: Run → Install on Pebble. Or with local SDK:
-  ```bash
-  pebble build && pebble install --phone <phone-ip>
-  ```
+  CloudPebble: Run → Install on Pebble. Local SDK: `pebble build && pebble install --phone <phone-ip>`.
 
-- [ ] **Step 2: Verify proxy connection**
+- [ ] **Step 2: Proxy connection** — Watchface loads, shows "Connecting…", resolves to the first team once `watch.connected.pebblekit` is true. Check the phone/CloudPebble console for fetch errors.
 
-  Open the Pebble phone app. Watch face should load, show "Connecting…" briefly, then resolve to the first team's state. Check CloudPebble console (or phone app console) for any fetch errors.
+- [ ] **Step 3: Clay saves + hot-reload** — Settings → pick Team 1 → Save. The watch should pick up the new team **without restarting** (via the `Message` handler → `applySettings`). Reopen the watchface and confirm the choice persisted (localStorage).
 
-- [ ] **Step 3: Verify Clay config saves and applies**
+- [ ] **Step 4: Cycle timer** — With 2+ teams, confirm auto-cycle at the configured interval with no stutter while a fetch is in flight.
 
-  In Pebble phone app → Settings for watchface. Pick Team 1 = any team. Save. Verify watch shows that team. Confirm `localStorage` persists after watch face restart (close and reopen watchface).
+- [ ] **Step 5: Stale overlay** — Disable phone connectivity (or leave BT range). Within 5 min the ⚠ banner shows the age; re-enable and confirm it clears on the next successful poll.
 
-- [ ] **Step 4: Verify cycle timer**
+- [ ] **Step 6: Live game (in season)** — Track a team with a game in progress. Confirm score/inning/outs/bases/count update at the poll interval; drop the poll interval to 30s and confirm faster updates.
 
-  With 2+ teams configured, watch should auto-cycle. Confirm cycle happens at the configured interval and does not stutter when a network call is in flight.
-
-- [ ] **Step 5: Verify stale overlay**
-
-  Disable WiFi and mobile data on the phone (or walk the watch out of Bluetooth range). Within 5 minutes, the ⚠ banner should appear with the age of the last update. Re-enable connection — the banner should disappear on the next successful poll.
-
-- [ ] **Step 6: Verify with a live game (if in season)**
-
-  Configure a team that has a game in progress. Confirm score, inning, outs, bases, and count update at the poll interval. Change poll interval via settings to 30s — verify it updates faster.
-
-- [ ] **Step 7: Final commit and push**
+- [ ] **Step 7: Final commit + push**
 
   ```bash
   git add -A
@@ -1304,7 +1164,9 @@ Check `screen.width` and `screen.height` for the actual Emery display dimensions
 
 ## Self-review notes
 
-- `normalizeLinescore` intentionally does not update `status` — only `refreshSchedule` (schedule timer) may change game state. This prevents a stale linescore from flipping a finished game back to "live".
-- The cycle timer fires on a fixed `Timer.repeat` and never awaits fetch calls — the display update from a fetch goes through `states[i]` and only refreshes the screen if `i === currentSlot`. This prevents fetch latency from affecting cycle smoothness.
-- `fetchAllSchedules` uses a sequential loop (not `Promise.all`) to avoid bursting three simultaneous requests on app launch.
-- Clay settings arrive via a `"settings"` proxy event — `System.restart()` is the simplest way to apply new team/interval settings cleanly.
+- **Status integrity:** `normalizeLinescore` never changes `status` and preserves `inningHalf` when the linescore omits it — only `refreshSchedule` (schedule timer) flips game state, so a stale/partial linescore can't revert a finished game to "live" or flip the half-inning.
+- **Cycle smoothness:** the cycle timer reads from `states[]` and never awaits a fetch; fetch results only repaint when `i === currentSlot`. Initial load (`fetchAllSchedules`) also respects `currentSlot`, so the screen no longer flickers through every team at launch.
+- **Settings without restart:** the three `setInterval` ids are torn down (`clearInterval`) and rebuilt in `applySettings`, so changing teams or intervals applies live. `System.restart()` (unverified in Alloy) is deliberately not used.
+- **Clock:** `minutechange` keeps the displayed time current even when no cycle/fetch fires.
+- **Network shape:** `hydrate=team,linescore` is required for abbreviations; bases come from `linescore.offense.first/second/third`; the standalone linescore supplies `teams.home/away.runs` + count.
+- **Verify-before-build flags:** the three items in the "Still flagged" box (Clay package name, Piu Application mount, `screen` dimensions) are the only assumptions not fully confirmed from docs — resolve each at its first emulator checkpoint (Tasks 1, 5).
