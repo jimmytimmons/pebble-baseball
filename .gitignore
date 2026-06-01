@@ -1,0 +1,6 @@
+# Pebble build output
+build/
+# JS deps
+node_modules/
+# waf lock
+.lock-waf*

@@ -1,0 +1,56 @@
+{
+  "name": "pebble-baseball",
+  "author": "Jimmy Timmons",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {
+    "pebble-clay": "^1.0.4"
+  },
+  "pebble": {
+    "displayName": "Baseball Scores",
+    "uuid": "aa831426-6b4e-4e0f-b505-b94608522e2c",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": true
+    },
+    "capabilities": [
+      "configurable"
+    ],
+    "messageKeys": [
+      "REQUEST",
+      "CYCLE",
+      "STATUS",
+      "TEAM",
+      "OPP",
+      "MY_SCORE",
+      "THEIR_SCORE",
+      "INNING_HALF",
+      "INNING",
+      "OUTS",
+      "BALLS",
+      "STRIKES",
+      "BASES",
+      "TEAM_NAME",
+      "GAME_TIME",
+      "GAME_DATE",
+      "NEXT_OPP",
+      "NEXT_DATE",
+      "NEXT_TIME",
+      "SLOT",
+      "TOTAL",
+      "team1",
+      "team2",
+      "team3",
+      "cycleInterval",
+      "pollInterval"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
