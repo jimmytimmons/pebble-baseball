@@ -1,36 +1,67 @@
-# pebble-baseball-c
+# Baseball Scores
 
-A Pebble watchapp/watchface written in C using the Pebble SDK.
+A watchface for the **Pebble Time 2** that keeps live MLB scores on your wrist. It
+auto-cycles through up to three of your favorite teams, showing the live score, base
+runners, the ball–strike–out count, and the inning — with sensible screens for games that
+haven't started, finished games, and off-days.
 
-## Building & running
+> Unofficial fan app. Uses the free public [MLB Stats API](https://statsapi.mlb.com).
+> Not affiliated with or endorsed by MLB.
+
+## Features
+
+- **Up to 3 teams**, auto-cycling on a configurable interval.
+- **Live games** — score, bases diamond, and a `BALLS · STRIKES · OUTS` row with the inning.
+- **Scheduled games** — opponent and start time ("Today" or the date).
+- **Final games** — final score with a green **WIN** / red **LOSS** badge.
+- **Off-days** — your team's next game: opponent, date, and time.
+- **Postponed / no-data** states handled gracefully.
+- Clock with day and date in the header, on every screen.
+
+## Install
+
+Once published, search **"Baseball Scores"** in the Pebble appstore (in the Pebble / Core
+app, or at the web appstore) and tap install.
+
+To sideload a development build:
 
 ```sh
-pebble build                          # build for all targetPlatforms
-pebble install --emulator emery       # install on the emery emulator
-pebble install --phone <ip>           # install to a paired phone
+pebble build
+pebble install --phone <your-phone-ip>   # Developer Connection enabled in the app
 ```
 
-## Target platforms
+## Settings
 
-`targetPlatforms` in `package.json` controls which watches you build for. The
-modern Pebble hardware is **emery** (Pebble Time 2), **gabbro** (Pebble Round
-2), and **flint** (Pebble 2 Duo); the original Pebble platforms (aplite,
-basalt, chalk, diorite) are included by default for backwards compatibility.
+Open the watchface's settings in the phone app:
 
-## Project layout
+- **Teams to track** — pick 1–3 teams. Leave a slot on **"None"** to skip it (set only
+  Team 1 to track a single team).
+- **Team cycle interval** — how long each team is shown before rotating.
 
+Tap **Save settings** to apply — the watch refreshes immediately.
+
+## How it works
+
+Split app: a native **C** watch side renders everything and never touches the network; a
+**PebbleKit JS** phone side fetches and normalizes the MLB Stats API and streams one
+compact game state per team to the watch over AppMessage.
+
+| Path | Role |
+|---|---|
+| `src/c/pebble-baseball-c.c` | Watch render + team cycling + AppMessage inbox |
+| `src/pkjs/index.js` | Phone fetch + normalize + AppMessage send queue + Clay |
+| `src/pkjs/clay-config.json` | Settings UI (team pickers + cycle interval) |
+| `package.json` | Metadata, target platform (`emery`), AppMessage `messageKeys` |
+
+Build and emulator details, plus the architecture rationale (why native C), are in
+[`CLAUDE.md`](CLAUDE.md).
+
+## Building
+
+```sh
+pebble build                       # -> build/pebble-baseball.pbw (emery)
+pebble install --emulator emery    # boots qemu + installs
+pebble screenshot --emulator emery out.png
 ```
-src/c/           C source for the watchapp
-src/pkjs/        PebbleKit JS (phone-side) source, if any
-worker_src/c/    Background worker source, if any
-resources/       Images, fonts, and other bundled resources
-package.json     Project metadata (UUID, platforms, resources, message keys)
-wscript          Build rules — usually no need to edit
-```
 
-By default this project is configured as a watchapp. To make it a watchface,
-set `pebble.watchapp.watchface` to `true` in `package.json`.
-
-## Documentation
-
-Full SDK docs, tutorials, and API reference: <https://developer.repebble.com>
+Run `pebble clean` first after changing `messageKeys` in `package.json`.
