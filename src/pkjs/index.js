@@ -9,7 +9,7 @@ var clayConfig = require("./clay-config.json");
 var clay = new Clay(clayConfig);
 
 var SCHEDULE = "https://statsapi.mlb.com/api/v1/schedule";
-var DEMO_TEAMS = [147, 111, 119]; // NYY, BOS, LAD — used until the user picks teams
+var DEMO_TEAMS = [121, 147, 119]; // NYM, NYY, LAD — used until the user picks teams
 
 // ---- settings ----
 
