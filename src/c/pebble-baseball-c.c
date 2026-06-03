@@ -63,78 +63,92 @@ static void draw_badge(GContext *ctx, const char *text, GColor bg, int w, int y)
                      GRect(x, y + 4, bw, 24), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
 }
 
+// Navy band: larger clock with a day/date line beneath it.
+#define HEADER_H 44
+
 static void draw_header(GContext *ctx, int w) {
   graphics_context_set_fill_color(ctx, c_navy);
-  graphics_fill_rect(ctx, GRect(0, 0, w, 30), 0, GCornerNone);
+  graphics_fill_rect(ctx, GRect(0, 0, w, HEADER_H), 0, GCornerNone);
+
   char tbuf[8];
   clock_copy_time_string(tbuf, sizeof(tbuf));
-  draw_centered(ctx, tbuf, FONT_KEY_GOTHIC_18_BOLD, w, 4, 24, GColorWhite);
+  draw_centered(ctx, tbuf, FONT_KEY_GOTHIC_24_BOLD, w, 0, 28, GColorWhite);
+
+  char dbuf[24];
+  time_t now = time(NULL);
+  strftime(dbuf, sizeof(dbuf), "%a, %b %e", localtime(&now));
+  draw_centered(ctx, dbuf, FONT_KEY_GOTHIC_14, w, 26, 16, GColorLightGray);
 }
 
-static void draw_dots(GContext *ctx, int w, int y) {
-  if (s_count <= 1) return;
-  int gap = 14, startx = w / 2 - (s_count - 1) * gap / 2;
-  for (int i = 0; i < s_count; i++) {
-    graphics_context_set_fill_color(ctx, i == s_slot ? c_navy : c_dim);
-    graphics_fill_circle(ctx, GPoint(startx + i * gap, y), 4);
-  }
+// One scoreboard column: big number with a small label beneath it.
+static void draw_col(GContext *ctx, int x, int colw, int y, const char *num, const char *label) {
+  graphics_context_set_text_color(ctx, c_text);
+  graphics_draw_text(ctx, num, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     GRect(x, y, colw, 24), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+  graphics_context_set_text_color(ctx, c_dim);
+  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(x, y + 22, colw, 16), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
 }
 
 // ---- per-state ----
 
 static void draw_live(GContext *ctx, int w, GameState *g, const char *score) {
-  draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, 36, 36, c_text);
-  char line[24];
-  snprintf(line, sizeof(line), "%s %d  -  %d out%s",
-           g->inning_half, g->inning, g->outs, g->outs == 1 ? "" : "s");
-  draw_centered(ctx, line, FONT_KEY_GOTHIC_18, w, 74, 24, c_dim);
+  draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, 46, 34, c_text);
+  char line[16];
+  snprintf(line, sizeof(line), "%s %d", g->inning_half, g->inning);
+  draw_centered(ctx, line, FONT_KEY_GOTHIC_24_BOLD, w, 76, 26, c_text);
 
-  int cx = w / 2, cy = 130;
-  draw_base(ctx, cx, cy - 20, g->second);
-  draw_base(ctx, cx + 20, cy, g->first);
-  draw_base(ctx, cx - 20, cy, g->third);
-  draw_base(ctx, cx, cy + 20, false);
+  int cx = w / 2, cy = 138;
+  draw_base(ctx, cx, cy - 18, g->second);
+  draw_base(ctx, cx + 18, cy, g->first);
+  draw_base(ctx, cx - 18, cy, g->third);
+  draw_base(ctx, cx, cy + 18, false);
 
-  char count[16];
-  snprintf(count, sizeof(count), "B %d    S %d", g->balls, g->strikes);
-  draw_centered(ctx, count, FONT_KEY_GOTHIC_18_BOLD, w, 162, 24, c_text);
+  char nb[4], ns[4], no[4];
+  snprintf(nb, sizeof(nb), "%d", g->balls);
+  snprintf(ns, sizeof(ns), "%d", g->strikes);
+  snprintf(no, sizeof(no), "%d", g->outs);
+  int cw = w / 3;
+  draw_col(ctx, 0,        cw, 168, nb, "BALLS");
+  draw_col(ctx, cw,       cw, 168, ns, "STRIKES");
+  draw_col(ctx, 2 * cw,   cw, 168, no, "OUTS");
 }
 
 static void draw_scheduled(GContext *ctx, int w, GameState *g) {
-  draw_centered(ctx, g->team_name[0] ? g->team_name : g->team, FONT_KEY_GOTHIC_24_BOLD, w, 40, 30, c_text);
+  draw_centered(ctx, g->team_name[0] ? g->team_name : g->team, FONT_KEY_GOTHIC_24_BOLD, w, 54, 30, c_text);
   char vs[16];
   snprintf(vs, sizeof(vs), "vs %s", g->opp);
-  draw_centered(ctx, vs, FONT_KEY_GOTHIC_18, w, 78, 24, c_dim);
-  draw_centered(ctx, g->game_time, FONT_KEY_GOTHIC_28_BOLD, w, 104, 36, c_text);
-  draw_centered(ctx, g->game_date[0] ? g->game_date : "Today", FONT_KEY_GOTHIC_18, w, 146, 24, c_dim);
+  draw_centered(ctx, vs, FONT_KEY_GOTHIC_18, w, 92, 24, c_dim);
+  draw_centered(ctx, g->game_time, FONT_KEY_GOTHIC_28_BOLD, w, 118, 36, c_text);
+  draw_centered(ctx, g->game_date[0] ? g->game_date : "Today", FONT_KEY_GOTHIC_18, w, 160, 24, c_dim);
 }
 
 static void draw_final(GContext *ctx, int w, GameState *g, const char *score) {
   bool won = g->my_score > g->their_score;
-  draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, 42, 36, c_text);
-  draw_badge(ctx, won ? "WIN" : "LOSS", won ? c_green : c_red, w, 92);
-  draw_centered(ctx, "Final", FONT_KEY_GOTHIC_18, w, 132, 24, c_dim);
+  draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, 56, 36, c_text);
+  draw_badge(ctx, won ? "WIN" : "LOSS", won ? c_green : c_red, w, 106);
+  draw_centered(ctx, "Final", FONT_KEY_GOTHIC_18, w, 146, 24, c_dim);
 }
 
 static void draw_off_day(GContext *ctx, int w, GameState *g) {
-  draw_centered(ctx, g->team_name[0] ? g->team_name : "Off day", FONT_KEY_GOTHIC_24_BOLD, w, 38, 30, c_text);
-  draw_centered(ctx, "Next game", FONT_KEY_GOTHIC_18, w, 74, 24, c_dim);
-  char vs[16];
-  snprintf(vs, sizeof(vs), "vs %s", g->next_opp[0] ? g->next_opp : "TBD");
-  draw_centered(ctx, vs, FONT_KEY_GOTHIC_18, w, 98, 24, c_text);
-  draw_centered(ctx, g->next_date, FONT_KEY_GOTHIC_24_BOLD, w, 122, 30, c_text);
-  draw_centered(ctx, g->next_time, FONT_KEY_GOTHIC_18, w, 158, 24, c_dim);
+  // Lead with the team so it's clear whose next game this is.
+  draw_centered(ctx, g->team_name[0] ? g->team_name : "Off day", FONT_KEY_GOTHIC_28_BOLD, w, 54, 36, c_text);
+  char vs[20];
+  snprintf(vs, sizeof(vs), "Next · vs %s", g->next_opp[0] ? g->next_opp : "TBD");
+  draw_centered(ctx, vs, FONT_KEY_GOTHIC_18, w, 98, 24, c_dim);
+  draw_centered(ctx, g->next_date, FONT_KEY_GOTHIC_24_BOLD, w, 124, 30, c_text);
+  draw_centered(ctx, g->next_time, FONT_KEY_GOTHIC_18, w, 162, 24, c_dim);
 }
 
 static void draw_postponed(GContext *ctx, int w, GameState *g) {
-  draw_centered(ctx, g->team[0] ? g->team : "--", FONT_KEY_GOTHIC_28_BOLD, w, 44, 36, c_text);
-  draw_badge(ctx, "PPD", c_dim, w, 96);
-  draw_centered(ctx, g->next_date[0] ? g->next_date : "Postponed", FONT_KEY_GOTHIC_18, w, 136, 24, c_dim);
+  draw_centered(ctx, g->team[0] ? g->team : "--", FONT_KEY_GOTHIC_28_BOLD, w, 58, 36, c_text);
+  draw_badge(ctx, "PPD", c_dim, w, 108);
+  draw_centered(ctx, g->next_date[0] ? g->next_date : "Postponed", FONT_KEY_GOTHIC_18, w, 150, 24, c_dim);
 }
 
 static void draw_error(GContext *ctx, int w, GameState *g) {
-  draw_centered(ctx, g->team[0] ? g->team : "--", FONT_KEY_GOTHIC_28_BOLD, w, 56, 36, c_text);
-  draw_centered(ctx, "Data unavailable", FONT_KEY_GOTHIC_18, w, 100, 24, c_dim);
+  draw_centered(ctx, g->team[0] ? g->team : "--", FONT_KEY_GOTHIC_28_BOLD, w, 70, 36, c_text);
+  draw_centered(ctx, "Data unavailable", FONT_KEY_GOTHIC_18, w, 114, 24, c_dim);
 }
 
 static void canvas_update(Layer *layer, GContext *ctx) {
@@ -147,8 +161,7 @@ static void canvas_update(Layer *layer, GContext *ctx) {
 
   GameState *g = &s_games[s_slot];
   if (!s_have_data || g->status[0] == 0) {
-    draw_centered(ctx, "Connecting...", FONT_KEY_GOTHIC_24_BOLD, w, 90, 28, c_dim);
-    draw_dots(ctx, w, 204);
+    draw_centered(ctx, "Connecting...", FONT_KEY_GOTHIC_24_BOLD, w, 100, 28, c_dim);
     return;
   }
 
@@ -161,8 +174,6 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   else if (strcmp(g->status, "off_day") == 0)   draw_off_day(ctx, w, g);
   else if (strcmp(g->status, "postponed") == 0) draw_postponed(ctx, w, g);
   else                                          draw_error(ctx, w, g);
-
-  draw_dots(ctx, w, 204);
 }
 
 // ---- cycling ----

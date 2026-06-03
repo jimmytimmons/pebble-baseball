@@ -8,8 +8,9 @@ pitch count. Free MLB Stats API, no auth.
 
 - **Watch side — C** (`src/c/pebble-baseball-c.c`): all rendering. Holds a `GameState[3]`
   array, auto-cycles slots on an `AppTimer`, and draws each of six states with color
-  graphics (navy header band, bold score, amber bases **diamond** via `gpath`, WIN/LOSS
-  badge, cycle dots). Receives data over AppMessage; never does networking.
+  graphics (navy header band with large clock + day/date, bold score, amber bases
+  **diamond** via `gpath`, a BALLS·STRIKES·OUTS stat row, WIN/LOSS badge). Receives data
+  over AppMessage; never does networking.
 - **Phone side — PKJS / JavaScript** (`src/pkjs/index.js`): fetches the MLB Stats API
   (`statsapi.mlb.com`), normalizes each team's game, and **streams one GameState per slot**
   to the watch via AppMessage (sequential send queue — AppMessage is one-at-a-time).
