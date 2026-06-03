@@ -53,9 +53,6 @@ compact game state per team to the watch over AppMessage.
 | `src/pkjs/clay-config.json` | Settings UI (team pickers + cycle interval) |
 | `package.json` | Metadata, target platform (`emery`), AppMessage `messageKeys` |
 
-Build and emulator details, plus the architecture rationale (why native C), are in
-[`CLAUDE.md`](CLAUDE.md).
-
 ## Building
 
 ```sh
