@@ -4,6 +4,7 @@
     "type": "section",
     "items": [
       { "type": "text", "defaultValue": "Teams to track" },
+      { "type": "text", "defaultValue": "Pick 1–3 teams. Leave a slot on “None” to skip it — set only Team 1 to track a single team." },
       {
         "type": "select",
         "messageKey": "team1",
@@ -128,27 +129,20 @@
     "items": [
       { "type": "text", "defaultValue": "Display" },
       {
-        "type": "range",
+        "type": "slider",
         "messageKey": "cycleInterval",
-        "label": "Cycle interval (seconds)",
+        "label": "Team cycle interval (seconds)",
+        "description": "How long each team is shown before rotating to the next.",
         "defaultValue": 15,
         "min": 5,
         "max": 60,
         "step": 5
-      },
-      {
-        "type": "range",
-        "messageKey": "pollInterval",
-        "label": "Refresh interval (seconds)",
-        "defaultValue": 60,
-        "min": 30,
-        "max": 300,
-        "step": 30
       }
     ]
   },
   {
     "type": "text",
-    "defaultValue": "Refresh only applies to live games. Scheduled and off-day slots update every 5 min automatically."
-  }
+    "defaultValue": "Scores refresh about once a minute while a game is live."
+  },
+  { "type": "submit", "defaultValue": "Save settings" }
 ]

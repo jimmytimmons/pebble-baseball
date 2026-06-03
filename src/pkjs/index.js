@@ -72,6 +72,7 @@ function normalize(data, teamId) {
     TEAM: mine.team.abbreviation || "",
     TEAM_NAME: mine.team.teamName || mine.team.shortName || mine.team.name || "",
     OPP: theirs.team.abbreviation || "",
+    OPP_NAME: theirs.team.teamName || theirs.team.shortName || theirs.team.name || "",
     MY_SCORE: mine.score || 0,
     THEIR_SCORE: theirs.score || 0,
     INNING_HALF: normHalf(ls.inningHalf),
@@ -120,7 +121,12 @@ function fetchNextGame(teamId, onDone) {
         if (g) {
           var isHome = g.teams.home.team.id === teamId;
           var theirs = isHome ? g.teams.away : g.teams.home;
-          return onDone({ NEXT_OPP: theirs.team.abbreviation || "", NEXT_DATE: formatDate(g.gameDate), NEXT_TIME: formatTime(g.gameDate) });
+          return onDone({
+            NEXT_OPP: theirs.team.abbreviation || "",
+            NEXT_OPP_NAME: theirs.team.teamName || theirs.team.shortName || theirs.team.name || "",
+            NEXT_DATE: formatDate(g.gameDate),
+            NEXT_TIME: formatTime(g.gameDate),
+          });
         }
       }
       onDone(null);
@@ -139,8 +145,8 @@ function fetchTeam(teamId, slot, total, cycle) {
       }
       fetchNextGame(teamId, function (next) {
         var msg = { STATUS: "off_day", TEAM: "", TEAM_NAME: "", OPP: "", SLOT: slot, TOTAL: total, CYCLE: cycle,
-                    NEXT_OPP: "", NEXT_DATE: "", NEXT_TIME: "" };
-        if (next) { msg.NEXT_OPP = next.NEXT_OPP; msg.NEXT_DATE = next.NEXT_DATE; msg.NEXT_TIME = next.NEXT_TIME; }
+                    NEXT_OPP: "", NEXT_OPP_NAME: "", NEXT_DATE: "", NEXT_TIME: "" };
+        if (next) { msg.NEXT_OPP = next.NEXT_OPP; msg.NEXT_OPP_NAME = next.NEXT_OPP_NAME; msg.NEXT_DATE = next.NEXT_DATE; msg.NEXT_TIME = next.NEXT_TIME; }
         enqueue(msg);
       });
     },
@@ -156,3 +162,9 @@ function fetchAll() {
 
 Pebble.addEventListener("ready", function () { console.log("PKJS ready"); fetchAll(); });
 Pebble.addEventListener("appmessage", function () { fetchAll(); });
+
+// Clay (registered first, in `new Clay()`) persists the saved settings before this
+// fires, so localStorage is fresh here — re-fetch so new teams take effect at once.
+Pebble.addEventListener("webviewclosed", function (e) {
+  if (e && e.response) { console.log("settings saved; refetching"); fetchAll(); }
+});

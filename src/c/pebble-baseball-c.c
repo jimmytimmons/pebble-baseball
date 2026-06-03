@@ -9,6 +9,7 @@ typedef struct {
   char team[8];
   char team_name[16];
   char opp[8];
+  char opp_name[16];
   int  my_score, their_score;
   char inning_half[4];
   int  inning, outs, balls, strikes;
@@ -16,6 +17,7 @@ typedef struct {
   char game_time[12];
   char game_date[16];
   char next_opp[8];
+  char next_opp_name[16];
   char next_date[16];
   char next_time[12];
 } GameState;
@@ -63,8 +65,8 @@ static void draw_badge(GContext *ctx, const char *text, GColor bg, int w, int y)
                      GRect(x, y + 4, bw, 24), GTextOverflowModeFill, GTextAlignmentCenter, NULL);
 }
 
-// Navy band: larger clock with a day/date line beneath it.
-#define HEADER_H 44
+// Navy band: clock on the left, day/date on the right, both on one line.
+#define HEADER_H 36
 
 static void draw_header(GContext *ctx, int w) {
   graphics_context_set_fill_color(ctx, c_navy);
@@ -72,12 +74,16 @@ static void draw_header(GContext *ctx, int w) {
 
   char tbuf[8];
   clock_copy_time_string(tbuf, sizeof(tbuf));
-  draw_centered(ctx, tbuf, FONT_KEY_GOTHIC_24_BOLD, w, 0, 28, GColorWhite);
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, tbuf, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     GRect(8, 4, w - 16, 28), GTextOverflowModeFill, GTextAlignmentLeft, NULL);
 
   char dbuf[24];
   time_t now = time(NULL);
   strftime(dbuf, sizeof(dbuf), "%a, %b %e", localtime(&now));
-  draw_centered(ctx, dbuf, FONT_KEY_GOTHIC_14, w, 26, 16, GColorLightGray);
+  graphics_context_set_text_color(ctx, GColorLightGray);
+  graphics_draw_text(ctx, dbuf, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(8, 9, w - 16, 22), GTextOverflowModeFill, GTextAlignmentRight, NULL);
 }
 
 // One scoreboard column: big number with a small label beneath it.
@@ -92,13 +98,37 @@ static void draw_col(GContext *ctx, int x, int colw, int y, const char *num, con
 
 // ---- per-state ----
 
-static void draw_live(GContext *ctx, int w, GameState *g, const char *score) {
-  draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, 46, 34, c_text);
+static void draw_live(GContext *ctx, int w, GameState *g, const char *score,
+                      int avail_h, int full_h) {
+  bool tight = avail_h < full_h;
+  int cx = w / 2;
+
+  // Under a Quick View peek, lift score/inning too — otherwise bottom-aligning
+  // the diamond drives its top vertex up into the inning text.
+  draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, tight ? 44 : 46, 34, c_text);
   char line[16];
   snprintf(line, sizeof(line), "%s %d", g->inning_half, g->inning);
-  draw_centered(ctx, line, FONT_KEY_GOTHIC_24_BOLD, w, 76, 26, c_text);
+  draw_centered(ctx, line, FONT_KEY_GOTHIC_24_BOLD, w, tight ? 68 : 76, 26, c_text);
 
-  int cx = w / 2, cy = 138;
+  if (tight) {
+    // Bottom-align the diamond + a compact count line just above the peek and
+    // collapse the BALLS/STRIKES/OUTS columns into one row. The cy floor keeps
+    // the diamond's top vertex (cy-26) clear of the inning text (ends ~94).
+    int cy = avail_h - 55;
+    if (cy < 122) cy = 122;
+    draw_base(ctx, cx, cy - 18, g->second);
+    draw_base(ctx, cx + 18, cy, g->first);
+    draw_base(ctx, cx - 18, cy, g->third);
+    draw_base(ctx, cx, cy + 18, false);
+
+    char c[20];
+    snprintf(c, sizeof(c), "%d-%d  %d out%s", g->balls, g->strikes,
+             g->outs, g->outs == 1 ? "" : "s");
+    draw_centered(ctx, c, FONT_KEY_GOTHIC_24_BOLD, w, cy + 28, 26, c_text);
+    return;
+  }
+
+  int cy = 138;
   draw_base(ctx, cx, cy - 18, g->second);
   draw_base(ctx, cx + 18, cy, g->first);
   draw_base(ctx, cx - 18, cy, g->third);
@@ -114,30 +144,36 @@ static void draw_live(GContext *ctx, int w, GameState *g, const char *score) {
   draw_col(ctx, 2 * cw,   cw, 168, no, "OUTS");
 }
 
-static void draw_scheduled(GContext *ctx, int w, GameState *g) {
+static void draw_scheduled(GContext *ctx, int w, GameState *g, int avail_h, int full_h) {
+  bool tight = avail_h < full_h;
   draw_centered(ctx, g->team_name[0] ? g->team_name : g->team, FONT_KEY_GOTHIC_24_BOLD, w, 54, 30, c_text);
-  char vs[16];
-  snprintf(vs, sizeof(vs), "vs %s", g->opp);
-  draw_centered(ctx, vs, FONT_KEY_GOTHIC_18, w, 92, 24, c_dim);
-  draw_centered(ctx, g->game_time, FONT_KEY_GOTHIC_28_BOLD, w, 118, 36, c_text);
-  draw_centered(ctx, g->game_date[0] ? g->game_date : "Today", FONT_KEY_GOTHIC_18, w, 160, 24, c_dim);
+  char vs[24];
+  snprintf(vs, sizeof(vs), "vs %s", g->opp_name[0] ? g->opp_name : g->opp);
+  draw_centered(ctx, vs, FONT_KEY_GOTHIC_18_BOLD, w, 92, 24, c_text);
+  draw_centered(ctx, g->game_time, FONT_KEY_GOTHIC_28_BOLD, w, tight ? 108 : 118, 36, c_text);
+  const char *date = g->game_date[0] ? g->game_date : "Today";
+  if (tight) draw_centered(ctx, date, FONT_KEY_GOTHIC_18_BOLD, w, avail_h - 26, 24, c_text);
+  else       draw_centered(ctx, date, FONT_KEY_GOTHIC_24_BOLD, w, 158, 30, c_text);
 }
 
 static void draw_final(GContext *ctx, int w, GameState *g, const char *score) {
   bool won = g->my_score > g->their_score;
   draw_centered(ctx, score, FONT_KEY_GOTHIC_28_BOLD, w, 56, 36, c_text);
   draw_badge(ctx, won ? "WIN" : "LOSS", won ? c_green : c_red, w, 106);
-  draw_centered(ctx, "Final", FONT_KEY_GOTHIC_18, w, 146, 24, c_dim);
+  draw_centered(ctx, "Final", FONT_KEY_GOTHIC_24_BOLD, w, 148, 30, c_text);
 }
 
-static void draw_off_day(GContext *ctx, int w, GameState *g) {
+static void draw_off_day(GContext *ctx, int w, GameState *g, int avail_h, int full_h) {
+  bool tight = avail_h < full_h;
   // Lead with the team so it's clear whose next game this is.
   draw_centered(ctx, g->team_name[0] ? g->team_name : "Off day", FONT_KEY_GOTHIC_28_BOLD, w, 54, 36, c_text);
-  char vs[20];
-  snprintf(vs, sizeof(vs), "Next · vs %s", g->next_opp[0] ? g->next_opp : "TBD");
+  char vs[28];
+  const char *nopp = g->next_opp_name[0] ? g->next_opp_name : (g->next_opp[0] ? g->next_opp : "TBD");
+  snprintf(vs, sizeof(vs), "Next · vs %s", nopp);
   draw_centered(ctx, vs, FONT_KEY_GOTHIC_18, w, 98, 24, c_dim);
-  draw_centered(ctx, g->next_date, FONT_KEY_GOTHIC_24_BOLD, w, 124, 30, c_text);
-  draw_centered(ctx, g->next_time, FONT_KEY_GOTHIC_18, w, 162, 24, c_dim);
+  draw_centered(ctx, g->next_date, FONT_KEY_GOTHIC_24_BOLD, w, tight ? 114 : 124, 30, c_text);
+  int time_y = tight ? (avail_h - 26) : 162;
+  draw_centered(ctx, g->next_time, FONT_KEY_GOTHIC_18, w, time_y, 24, c_dim);
 }
 
 static void draw_postponed(GContext *ctx, int w, GameState *g) {
@@ -153,7 +189,10 @@ static void draw_error(GContext *ctx, int w, GameState *g) {
 
 static void canvas_update(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
+  GRect ub = layer_get_unobstructed_bounds(layer);
   int w = b.size.w;
+  int avail_h = ub.size.h;   // shrinks when Quick View peeks from the bottom
+  int full_h = b.size.h;
 
   graphics_context_set_fill_color(ctx, c_bg);
   graphics_fill_rect(ctx, b, 0, GCornerNone);
@@ -168,10 +207,10 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   char score[24];
   snprintf(score, sizeof(score), "%s %d-%d %s", g->team, g->my_score, g->their_score, g->opp);
 
-  if      (strcmp(g->status, "live") == 0)      draw_live(ctx, w, g, score);
-  else if (strcmp(g->status, "scheduled") == 0) draw_scheduled(ctx, w, g);
+  if      (strcmp(g->status, "live") == 0)      draw_live(ctx, w, g, score, avail_h, full_h);
+  else if (strcmp(g->status, "scheduled") == 0) draw_scheduled(ctx, w, g, avail_h, full_h);
   else if (strcmp(g->status, "final") == 0)     draw_final(ctx, w, g, score);
-  else if (strcmp(g->status, "off_day") == 0)   draw_off_day(ctx, w, g);
+  else if (strcmp(g->status, "off_day") == 0)   draw_off_day(ctx, w, g, avail_h, full_h);
   else if (strcmp(g->status, "postponed") == 0) draw_postponed(ctx, w, g);
   else                                          draw_error(ctx, w, g);
 }
@@ -211,10 +250,12 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   READ_STR(MESSAGE_KEY_TEAM, g->team);
   READ_STR(MESSAGE_KEY_TEAM_NAME, g->team_name);
   READ_STR(MESSAGE_KEY_OPP, g->opp);
+  READ_STR(MESSAGE_KEY_OPP_NAME, g->opp_name);
   READ_STR(MESSAGE_KEY_INNING_HALF, g->inning_half);
   READ_STR(MESSAGE_KEY_GAME_TIME, g->game_time);
   READ_STR(MESSAGE_KEY_GAME_DATE, g->game_date);
   READ_STR(MESSAGE_KEY_NEXT_OPP, g->next_opp);
+  READ_STR(MESSAGE_KEY_NEXT_OPP_NAME, g->next_opp_name);
   READ_STR(MESSAGE_KEY_NEXT_DATE, g->next_date);
   READ_STR(MESSAGE_KEY_NEXT_TIME, g->next_time);
   READ_INT(MESSAGE_KEY_MY_SCORE, g->my_score);
@@ -241,6 +282,18 @@ static void request_update(void) {
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   layer_mark_dirty(s_canvas);
   request_update();   // refresh once a minute
+}
+
+// ---- unobstructed area (Quick View peek) ----
+
+// Fires for every animation frame while the peek slides in/out; re-rendering
+// each frame against the live unobstructed bounds gives a smooth reflow.
+static void unobstructed_change(AnimationProgress progress, void *context) {
+  layer_mark_dirty(s_canvas);
+}
+
+static void unobstructed_did_change(void *context) {
+  layer_mark_dirty(s_canvas);
 }
 
 static void window_load(Window *window) {
@@ -274,11 +327,15 @@ static void init(void) {
   window_stack_push(s_window, true);
 
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
+  unobstructed_area_service_subscribe((UnobstructedAreaHandlers){
+    .change = unobstructed_change, .did_change = unobstructed_did_change,
+  }, NULL);
   s_cycle_timer = app_timer_register(s_cycle_ms, cycle_cb, NULL);
   request_update();
 }
 
 static void deinit(void) {
+  unobstructed_area_service_unsubscribe();
   window_destroy(s_window);
 }
 
